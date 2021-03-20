@@ -1,8 +1,8 @@
-pub mod graph2;
-
+use smallvec::smallvec as vec;
+use smallvec::SmallVec;
 use std::{
+    borrow::Borrow,
     collections::{HashMap, HashSet, VecDeque},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 #[derive(Debug)]
@@ -15,593 +15,437 @@ pub enum Error {
     InvalidPortType,
 }
 
-fn unique() -> u64 {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    COUNTER.fetch_add(1, Ordering::SeqCst)
+type Vec<T> = SmallVec<[T; 16]>;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct NodeRef(usize);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PortRef(usize);
+impl Borrow<usize> for NodeRef {
+    fn borrow(&self) -> &'_ usize {
+        &self.0
+    }
+}
+impl Borrow<usize> for PortRef {
+    fn borrow(&self) -> &'_ usize {
+        &self.0
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct PortInfo {
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct Edge {
+    src_node: NodeRef,
+    src_port: PortRef,
+    dst_node: NodeRef,
+    dst_port: PortRef,
     type_: PortType,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default)]
+struct BufferAllocator {
+    event_buffer_count: usize,
+    audio_buffer_count: usize,
+    event_buffer_stack: Vec<usize>,
+    audio_buffer_stack: Vec<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PortType {
-    Event,
     Audio,
-}
-
-#[derive(Clone, Debug)]
-struct NodeInfo {
-    id: u64,
-    ports: Vec<(u64, PortInfo)>,
-    connections: Vec<ConnectionInfo>,
-    delay: u64,
-    latency: Option<u64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ConnectionInfo {
-    src: (NodeRef, PortRef),
-    dst: (NodeRef, PortRef),
-    type_: PortType,
-}
-
-// impl ConnectionInfo {
-//     fn is_incoming(&self, node: &NodeInfo) -> bool {
-//         self.dst.0 == NodeRef(node.id)
-//     }
-//     fn is_outgoing(&self, node: &NodeInfo) -> bool {
-//         self.src.0 == NodeRef(node.id)
-//     }
-// }
-
-impl NodeInfo {
-    fn incoming(&self) -> impl Iterator<Item = ConnectionInfo> + '_ {
-        self.connections
-            .iter()
-            .filter(move |c| c.dst.0 .0 == self.id)
-            .copied()
-    }
-    fn dependencies(&self) -> impl Iterator<Item = NodeRef> + '_ {
-        self.connections.iter().filter_map(move |c| {
-            if c.dst.0 .0 == self.id {
-                Some(c.src.0)
-            } else {
-                None
-            }
-        })
-    }
-    fn dependents(&self) -> impl Iterator<Item = NodeRef> + '_ {
-        self.connections.iter().filter_map(move |c| {
-            if c.src.0 .0 == self.id {
-                Some(c.dst.0)
-            } else {
-                None
-            }
-        })
-    }
+    Event,
 }
 
 #[derive(Default)]
 pub struct Graph {
-    nodes: HashMap<u64, NodeInfo>,
-    names: HashMap<u64, String>,
-    ports_to_nodes: HashMap<u64, u64>,
+    edges: Vec<Vec<Edge>>,
+    ports: Vec<Vec<PortRef>>,
+    delays: Vec<u64>,
+    port_data: Vec<(NodeRef, PortType)>,
+    port_names:Vec<String>, 
+    node_names:Vec<String>,
+    free_nodes: Vec<NodeRef>,
+    free_ports: Vec<PortRef>,
 }
 
-struct BufferAllocator {
-    event_buffer_count: u64,
-    audio_buffer_count: u64,
-    event_buffer_stack: Vec<u64>,
-    audio_buffer_stack: Vec<u64>,
+#[derive(Copy, Clone, Debug)]
+pub struct Buffer {
+    index: usize,
+    type_: PortType,
 }
-
-pub trait Ref
-where
-    Self: Into<u64>,
-{
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BufferRef(u64, PortType);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NodeRef(u64);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PortRef(u64);
-
-impl Into<u64> for BufferRef {
-    fn into(self) -> u64 {
-        self.0
-    }
-}
-
-impl Into<u64> for PortRef {
-    fn into(self) -> u64 {
-        self.0
-    }
-}
-
-impl Into<u64> for NodeRef {
-    fn into(self) -> u64 {
-        self.0
-    }
-}
-
-impl Ref for NodeRef {}
-impl Ref for PortRef {}
-impl Ref for BufferRef {}
 
 impl BufferAllocator {
-    fn new() -> Self {
-        Self {
-            event_buffer_count: 0,
-            audio_buffer_count: 0,
-            event_buffer_stack: vec![],
-            audio_buffer_stack: vec![],
-        }
-    }
-
-    fn acquire(&mut self, type_: PortType) -> BufferRef {
+    fn acquire(&mut self, type_: PortType) -> Buffer {
         let (count, stack) = match type_ {
             PortType::Event => (&mut self.event_buffer_count, &mut self.event_buffer_stack),
             PortType::Audio => (&mut self.audio_buffer_count, &mut self.audio_buffer_stack),
         };
-        if let Some(thing) = stack.pop() {
-            BufferRef(thing, type_)
+        if let Some(index) = stack.pop() {
+            Buffer { index, type_ }
         } else {
-            let bref = BufferRef(*count, type_);
+            let buffer = Buffer {
+                index: *count,
+                type_,
+            };
             *count += 1;
-            bref
+            buffer
         }
     }
 
-    fn release(&mut self, ref_: BufferRef) {
-        let stack = match ref_.1 {
+    fn release(&mut self, ref_: Buffer) {
+        let stack = match ref_.type_ {
             PortType::Event => &mut self.event_buffer_stack,
             PortType::Audio => &mut self.audio_buffer_stack,
         };
-        stack.push(ref_.0);
+        stack.push(ref_.index);
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct Scheduled {
+    pub node: NodeRef,
+    pub inputs: Vec<(PortRef, Vec<Buffer>)>,
+    pub outputs: Vec<(PortRef, Buffer)>,
 }
 
 impl Graph {
-    /// Get the name of something in the graph.
-    pub fn name<R: Ref>(&self, r: R) -> Option<&'_ str> {
-        let id = r.into();
-        self.names.get(&id).map(|s| s.as_str())
-    }
-
-    /// Delete something from the graph, such as a node or port. Returns an error if the thing did not exist or is not owned by the graph.
-    pub fn delete<R: Ref>(&mut self, r: R) -> Result<(), Error> {
-        let thing: u64 = r.into();
-        if let Some(node) = self.nodes.remove(&thing) {
-            let NodeInfo {
-                id,
-                ports,
-                connections,
-                ..
-            } = node;
-            for (p, _) in ports {
-                let _ = self.ports_to_nodes.remove(&p);
-            }
-            for c in connections {
-                let neighbor = if c.src.0 == NodeRef(id) {
-                    c.dst.0 .0
-                } else {
-                    c.src.0 .0
-                };
-                if let Some(neighbor) = self.nodes.get_mut(&neighbor) {
-                    if let Some(idx) = neighbor.connections.iter().position(|c_| *c_ == c) {
-                        neighbor.connections.remove(idx);
-                    }
-                }
-            }
-            Ok(())
-        } else if let Some(node) = self.ports_to_nodes.remove(&thing) {
-            let connections = self
-                .nodes
-                .get_mut(&node)
-                .unwrap()
-                .connections
-                .iter()
-                .filter(|c| c.src.1 == PortRef(thing) || c.dst.1 == PortRef(thing))
-                .copied()
-                .collect::<Vec<_>>();
-            for c in connections {
-                let ConnectionInfo { src, dst, .. } = c;
-                let _r = self.disconnect(src.1, dst.1);
-                debug_assert!(_r.is_ok());
-            }
-            let parent_node = self.nodes.get_mut(&node).unwrap();
-            let idx = parent_node
-                .ports
-                .iter()
-                .position(|(p, _)| *p == thing)
-                .unwrap();
-            parent_node.ports.remove(idx);
-            Ok(())
+    pub fn node(&mut self, name:&str) -> NodeRef {
+        if let Some(node) = self.free_nodes.pop() {
+            let id = node.0;
+            self.edges[id].clear();
+            self.ports[id].clear();
+            self.delays[id] = 0;
+            self.node_names[id] = name.to_owned();
+            node
         } else {
-            Err(Error::RefDoesNotExist)
+            let id = self.node_count();
+            self.edges.push(vec![]);
+            self.ports.push(vec![]);
+            self.delays.push(0);
+            self.node_names.push(name.to_owned());
+            NodeRef(id)
         }
     }
 
-    /// Create a new node in the graph.
-    pub fn node(&mut self, name: &str) -> NodeRef {
-        let id = unique();
-        let _old_name = self.names.insert(id, name.to_owned());
-        debug_assert!(_old_name.is_none());
-        let info = NodeInfo {
-            id,
-            ports: vec![],
-            connections: vec![],
-            delay: 0,
-            latency: None,
-        };
-        self.nodes.insert(id, info);
-        NodeRef(id)
-    }
-
-    /// Create a new port for a node    
-    pub fn port(
-        &mut self,
-        node: NodeRef,
-        port_name: &str,
-        port_type: PortType,
-    ) -> Result<PortRef, Error> {
-        let node = self.nodes.get_mut(&node.0).ok_or(Error::NodeDoesNotExist)?;
-        let id = unique();
-        let _old_name = self.names.insert(id, port_name.to_owned());
-        debug_assert!(_old_name.is_none());
-        let info = PortInfo { type_: port_type };
-        node.ports.push((id, info));
-        self.ports_to_nodes.insert(id, node.id);
-        Ok(PortRef(id))
-    }
-
-    /// Update the delay of a node in the graph. Will invalidate any latencies internally.
-    pub fn set_delay(&mut self, node: NodeRef, delay: u64) -> Result<(), Error> {
-        let node = self.nodes.get_mut(&node.0).ok_or(Error::NodeDoesNotExist)?;
-        node.delay = delay;
-        let mut stack = vec![node.id];
-        while let Some(next) = stack.pop() {
-            let node = self.nodes.get_mut(&next).unwrap();
-            for n in node.dependents() {
-                stack.push(n.0);
-            }
-            node.latency = None;
+    pub fn port(&mut self, node: NodeRef, type_: PortType, name:&str) -> Result<PortRef, Error> {
+        if node.0 < self.node_count() && !self.free_nodes.contains(&node) {
+            let port = self
+                .free_ports
+                .pop()
+                .or_else(|| {
+                    self.port_data.push((node, type_));
+                    self.port_names.push(Default::default());
+                    Some(PortRef(self.port_count() - 1))
+                })
+                .unwrap();
+            self.ports[node.0].push(port);
+            self.port_data[port.0] = (node, type_);
+            self.port_names[port.0] = name.to_owned();
+            Ok(port)
+        } else {
+            Err(Error::NodeDoesNotExist)
         }
+    }
+
+    pub fn delete_port(&mut self, p: PortRef) -> Result<(), Error> {
+        self.port_check(p)?;
+        let (node, _) = self.port_data[p.0];
+        for e in self.edges[node.0]
+            .clone()
+            .into_iter()
+            .filter(|e| e.dst_port == p || e.src_port == p)
+        {
+            let _e = self.remove_edge(e);
+            debug_assert!(_e.is_ok());
+        }
+        let index = self.ports[node.0].iter().position(|p_| *p_ == p).ok_or(Error::PortDoesNotExist)?; 
+        self.ports[node.0].remove(index);
+        self.free_ports.push(p);
         Ok(())
     }
 
-    /// Connect two ports. Returns an error if they do not exist or if their types
-    /// do not match.
-    pub fn connect(&mut self, src: PortRef, dst: PortRef) -> Result<(), Error> {
-        let src_node_id = *self
-            .ports_to_nodes
-            .get(&src.0)
-            .ok_or(Error::PortDoesNotExist)?;
-        let dst_node_id = *self
-            .ports_to_nodes
-            .get(&dst.0)
-            .ok_or(Error::PortDoesNotExist)?;
-        fn cycle_check(graph: &Graph, src: u64, check: u64) -> Result<(), Error> {
-            if src == check {
-                return Err(Error::Cycle);
-            }
-            for node in graph
-                .nodes
-                .get(&src)
-                .ok_or(Error::NodeDoesNotExist)?
-                .dependents()
-            {
-                cycle_check(graph, node.0, check)?;
-            }
-            Ok(())
+    pub fn delete_node(&mut self, n: NodeRef) -> Result<(), Error> {
+        self.node_check(n)?;
+        for p in self.ports[n.0].clone() {
+            let _e = self.delete_port(p);
+            debug_assert!(_e.is_ok());
         }
-        let src_node = self
-            .nodes
-            .get(&src_node_id)
-            .ok_or(Error::NodeDoesNotExist)?;
-        let dst_node = self
-            .nodes
-            .get(&dst_node_id)
-            .ok_or(Error::NodeDoesNotExist)?;
-        cycle_check(self, dst_node_id, src_node_id)?;
-        let (_, src_port) = src_node
-            .ports
-            .iter()
-            .find(|(id, _)| *id == src.0)
-            .ok_or(Error::PortDoesNotExist)?;
-        let (_, dst_port) = dst_node
-            .ports
-            .iter()
-            .find(|(id, _)| *id == dst.0)
-            .ok_or(Error::PortDoesNotExist)?;
-        if src_port.type_ != dst_port.type_ {
+        self.free_nodes.push(n);
+        Ok(())
+    }
+
+    pub fn connect(&mut self, src: PortRef, dst: PortRef) -> Result<(), Error> {
+        self.port_check(src)?;
+        self.port_check(dst)?;
+        self.cycle_check(src, dst)?;
+        let (src_node, src_type) = self.port_data[src.0];
+        let (dst_node, dst_type) = self.port_data[dst.0];
+        if src_type != dst_type {
             return Err(Error::InvalidPortType);
         }
-        let connection = ConnectionInfo {
-            src: (NodeRef(src_node_id), src),
-            dst: (NodeRef(dst_node_id), dst),
-            type_: src_port.type_,
+        let edge = Edge {
+            src_node,
+            src_port: src,
+            dst_node,
+            dst_port: dst,
+            type_: src_type,
         };
-        self.nodes
-            .get_mut(&src_node_id)
-            .unwrap()
-            .connections
-            .push(connection);
-        self.nodes
-            .get_mut(&dst_node_id)
-            .unwrap()
-            .connections
-            .push(connection);
+        println!("connection {}.{} to {}.{} with edge: {:?}", self.node_name(src_node).unwrap(), self.port_name(src).unwrap(), self.node_name(dst_node).unwrap(), self.port_name(dst).unwrap(), edge);
+        self.edges[src_node.0].push(edge);
+        self.edges[dst_node.0].push(edge);
         Ok(())
     }
 
-    // Internal. Remove an edge from the graph.
-    fn disconnect_edge(&mut self, edge: ConnectionInfo) -> Result<(), Error> {
-        let (src_node, src_port) = edge.src;
-        let (dst_node, dst_port) = edge.dst;
-        let src_index = self
-            .nodes
-            .get(&src_node.0)
-            .ok_or(Error::NodeDoesNotExist)?
-            .connections
-            .iter()
-            .position(|c| c.src.1 == src_port)
-            .ok_or(Error::ConnectionDoesNotExist)?;
-        let dst_index = self
-            .nodes
-            .get(&dst_node.0)
-            .ok_or(Error::NodeDoesNotExist)?
-            .connections
-            .iter()
-            .position(|c| c.dst.1 == dst_port)
-            .ok_or(Error::ConnectionDoesNotExist)?;
-        self.nodes
-            .get_mut(&src_node.0)
-            .unwrap()
-            .connections
-            .remove(src_index);
-        self.nodes
-            .get_mut(&dst_node.0)
-            .unwrap()
-            .connections
-            .remove(dst_index);
-        Ok(())
-    }
-
-    /// Disconnect two ports, returning an error if they were not connected or did not exist.
     pub fn disconnect(&mut self, src: PortRef, dst: PortRef) -> Result<(), Error> {
-        let src_node_id = *self
-            .ports_to_nodes
-            .get(&src.0)
-            .ok_or(Error::PortDoesNotExist)?;
-        let dst_node_id = *self
-            .ports_to_nodes
-            .get(&dst.0)
-            .ok_or(Error::PortDoesNotExist)?;
-        let src_node = self
-            .nodes
-            .get_mut(&src_node_id)
-            .ok_or(Error::NodeDoesNotExist)?;
-        let info = src_node
-            .ports
-            .iter()
-            .find_map(|(id, info)| if *id == src.0 { Some(*info) } else { None })
-            .ok_or(Error::PortDoesNotExist)?;
-        let connection = ConnectionInfo {
-            src: (NodeRef(src_node_id), src),
-            dst: (NodeRef(dst_node_id), dst),
-            type_: info.type_,
-        };
-        self.disconnect_edge(connection)
+        self.port_check(src)?;
+        self.port_check(dst)?;
+        let (src_node, _) = self.port_data[src.0];
+        let (dst_node, _) = self.port_data[dst.0];
+        let type_ = self.port_data[src.0].1;
+        self.remove_edge(Edge {
+            src_node,
+            src_port: src,
+            dst_node,
+            dst_port: dst,
+            type_,
+        })
     }
 
-    pub fn compile(&mut self, root: NodeRef, state: &mut State) -> Vec<ScheduleEntry> {
-        // Once all our work is done, add a node to the schedule.
-        #[inline]
-        fn add_to_schedule(
-            graph: &Graph,
-            node: u64,
-            schedule: &mut Vec<ScheduleEntry>,
-            assignments: &HashMap<ConnectionInfo, (BufferRef, usize)>,
-        ) {
-            let entry = ScheduleEntry {
-                node: NodeRef(node),
-                buffers: graph
-                    .nodes
-                    .get(&node)
-                    .unwrap()
-                    .connections
-                    .iter()
-                    .map(|c| {
-                        let port = if c.src.0 .0 == node { c.src.1 } else { c.dst.1 };
-                        (port, assignments.get(c).unwrap().0)
-                    })
-                    .collect(),
-            };
-            schedule.push(entry);
+    pub fn set_delay(&mut self, node:NodeRef, delay:u64) -> Result<(), Error> {
+        self.node_check(node)?; 
+        self.delays[node.0] = delay;
+        Ok(())
+    }
+
+    pub fn port_name(&self, port:PortRef) -> Result<&'_ str, Error> {
+        self.port_check(port)?; 
+        Ok(&self.port_names[port.0])
+    }
+
+    pub fn node_name(&self, node:NodeRef) -> Result<&'_ str, Error> {
+        self.node_check(node)?; 
+        Ok(&self.node_names[node.0])
+    }
+    
+    fn node_count(&self) -> usize {
+        self.ports.len()
+    }
+
+    fn port_count(&self) -> usize {
+        self.port_data.len()
+    }
+
+    fn node_check(&self, n: NodeRef) -> Result<(), Error> {
+        if n.0 < self.node_count() && !self.free_nodes.contains(&n) {
+            Ok(())
+        } else {
+            Err(Error::NodeDoesNotExist)
         }
-        // If a latency requirement is found, we need to insert a delay into the graph.
-        #[inline]
-        fn insert_delay(
-            graph: &mut Graph,
-            edge: ConnectionInfo,
-            amount: u64,
-            state: &mut State,
-            updates: &mut Vec<DelayInfo>,
-        ) -> NodeRef {
-            // reuse the delay if it already exists
-            if let Some(delay) = state.delays.get_mut(&edge) {
-                delay.delay = amount;
-                updates.push(*delay);
-                delay.node
+    }
+
+    fn port_check(&self, p: PortRef) -> Result<(), Error> {
+        if p.0 < self.port_count() && !self.free_ports.contains(&p) {
+            Ok(())
+        } else {
+            Err(Error::PortDoesNotExist)
+        }
+    }
+
+    fn cycle_check(&self, src: PortRef, dst: PortRef) -> Result<(), Error> {
+        let mut stack: Vec<PortRef> = vec![src];
+        while let Some(src) = stack.pop() {
+            if src == dst {
+                return Err(Error::Cycle);
+            }
+            stack.extend(self.outgoing(src).map(|e| e.dst_port));
+        }
+        Ok(())
+    }
+
+    fn remove_edge(&mut self, edge: Edge) -> Result<(), Error> {
+        let Edge {
+            src_node, dst_node, ..
+        } = edge;
+        let src_index = self.edges[src_node.0].iter().position(|e| *e == edge);
+        let dst_index = self.edges[dst_node.0].iter().position(|e| *e == edge);
+        match (src_index, dst_index) {
+            (Some(s), Some(d)) => {
+                self.edges[src_node.0].remove(s);
+                self.edges[dst_node.0].remove(d);
+                Ok(())
+            }
+            _ => Err(Error::ConnectionDoesNotExist),
+        }
+    }
+
+    fn incoming(&self, port: PortRef) -> impl Iterator <Item = Edge> + '_ {
+        let node = self.port_data[port.0].0;
+        self.edges[node.0]
+            .iter()
+            .filter(move |e| e.dst_port == port)
+            .copied()
+    }
+
+    fn outgoing(&self, port: PortRef) -> impl Iterator<Item = Edge> + '_ {
+        let node = self.port_data[port.0].0;
+        self.edges[node.0]
+            .iter()
+            .filter(move |e| e.src_port == port)
+            .copied()
+    }
+
+    fn dependencies(&self, node: NodeRef) -> impl Iterator<Item = NodeRef> + '_ {
+        self.edges[node.0].iter().filter_map(move |e| {
+            if e.dst_node == node {
+                Some(e.src_node)
             } else {
-                // otherwise, create a new node
-                let (src_node, src_port) = edge.src;
-                let (dst_node, dst_port) = edge.dst;
-                let delay_node = graph.node(&format!(
-                    "delay-{}.{}-{}.{}",
-                    graph.name(src_node).unwrap(),
-                    graph.name(src_port).unwrap(),
-                    graph.name(dst_node).unwrap(),
-                    graph.name(dst_port).unwrap(),
-                ));
-                let input = graph.port(delay_node, "input", edge.type_).unwrap();
-                let output = graph.port(delay_node, "output", edge.type_).unwrap();
-                graph.disconnect_edge(edge).unwrap();
-                graph.connect(src_port, input).unwrap();
-                graph.connect(output, dst_port).unwrap();
-                let delay = DelayInfo {
-                    delay: amount,
-                    node: delay_node,
-                };
-                updates.push(delay);
-                delay_node
+                None
             }
+        })
+    }
+
+    fn dependents(&self, node: NodeRef) -> impl Iterator<Item = NodeRef> + '_ {
+        self.edges[node.0].iter().filter_map(move |e| {
+            if e.src_node == node {
+                Some(e.dst_node)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn walk_mut(&mut self, root: NodeRef, mut f: impl FnMut(&mut Graph, NodeRef)) {
+        let mut queue = VecDeque::new();
+        let mut visited: HashSet<NodeRef> = HashSet::new();
+        queue.push_back(root);
+        while let Some(node) = queue.pop_front() {
+            if visited.contains(&node) {
+                continue;
+            }
+            let len = queue.len();
+            queue.extend(self.dependencies(node).filter(|n| !visited.contains(n)));
+            if queue.len() != len {
+                queue.push_back(node);
+                continue;
+            }
+            (&mut f)(self, node);
+            queue.extend(self.dependents(node).filter(|n| !visited.contains(n)));
+            visited.insert(node);
         }
-        // Once we reach a node after all its dependencies, we compute its latency requirements
-        // and return an iterator of delay nodes to be inserted
-        #[inline]
-        fn solve_latency_reqs<'a, 'b>(
-            graph: &'a mut Graph,
-            node: u64,
-            state: &'a mut State,
-            updates: &'a mut Vec<DelayInfo>,
-        ) -> impl Iterator<Item = NodeRef> + 'a {
-            dbg!(graph.name(NodeRef(node)));
-            let node = graph.nodes.get_mut(&node).unwrap().clone();
-            let incoming = node.dependencies();
-            let latencies = incoming
-                .map(|i| {
-                    dbg!(graph.name(i));
-                    let node = graph.nodes.get(&i.0).expect("node not in graph");
-                    node.delay + node.latency.unwrap()
-                })
+    }
+
+    pub fn compile(&mut self, root: NodeRef) -> impl Iterator<Item = Scheduled> + '_ {
+        let mut all_latencies: Vec<Option<u64>> = vec![None; self.node_count()];
+        let mut delays: HashMap<Edge, (NodeRef, u64)> = Default::default();
+        let mut solve_latency_requirements = |graph: &mut Graph, node: NodeRef| {
+            let _deps = graph.dependencies(node).collect::<Vec<_>>();
+            let latencies = graph
+                .dependencies(node)
+                .map(|n| all_latencies[n.0].unwrap() + graph.delays[n.0])
                 .collect::<Vec<_>>();
-            let latency = latencies.iter().copied().max().unwrap_or(0);
-            graph.nodes.get_mut(&node.id).unwrap().latency = Some(latency);
-            latencies
-                .into_iter()
-                .zip(node.incoming().collect::<Vec<_>>().into_iter())
-                .map(move |(input_latency, edge)| {
-                    insert_delay(graph, edge, latency - input_latency, state, updates)
-                })
-        }
-        // After latency requirements are solved we need to compute which buffers to allocate.
-        #[inline]
-        fn solve_buffer_reqs(
-            graph: &mut Graph,
-            node: u64,
-            assignments: &mut HashMap<ConnectionInfo, (BufferRef, usize)>,
-            allocator: &mut BufferAllocator,
-        ) {
-            let node = graph.nodes.get(&node).unwrap();
-            for (port_id, port) in node.ports.iter().copied() {
-                dbg!(graph.name(NodeRef(node.id)), graph.name(PortRef(port_id)));
-                let buffer = allocator.acquire(port.type_);
-                let mut has_outgoing = false;
-                for c in node
-                    .connections
-                    .iter()
-                    .filter(|c| c.src.1 == PortRef(port_id))
+            let max_latency = latencies.iter().max().copied().or(Some(0));
+            all_latencies[node.0] = max_latency;
+            let mut insertions: Vec<NodeRef> = vec![];
+            for (dep, latency) in graph
+                .dependencies(node)
+                .zip(latencies.into_iter())
+                .collect::<Vec<_>>()
+            {
+                for edge in graph.edges[node.0]
+                    .clone()
+                    .into_iter()
+                    .filter(move |e| e.src_node == dep)
                 {
-                    has_outgoing = true;
-                    debug_assert!(!assignments.contains_key(c));
-                    let e = assignments.entry(*c).or_insert((buffer, 0));
-                    e.1 += 1;
-                }
-                for _c in node.incoming() {
-                    // if let Some((buffer, count)) = assignments.get_mut(&c) {
-                    //     let (buffer, count) = assignments.get_mut(&c).unwrap();
-                    //     *count -= 1;
-                    //     if *count == 0 {
-                    //         allocator.release(*buffer);
-                    //     }
-                    // } else {
-                    //     // the input buffer may not be assigned if a delay node has been inserted after
-                    //     // the source node has been created. In this case we need to walk back the edge,
-                    //     // assign the buffer to the input, and move on.
-                    // }
-                }
-                if !has_outgoing {
-                    allocator.release(buffer);
-                }
-            }
-        }
-        // The main driver of the compilation pass
-        fn driver(graph: &mut Graph, root: NodeRef, state: &mut State) -> Vec<ScheduleEntry> {
-            let mut allocator = BufferAllocator::new();
-            let mut schedule = Vec::with_capacity(graph.nodes.len());
-            let mut visited: HashSet<u64> = HashSet::with_capacity(graph.nodes.len());
-            let mut delay_updates = vec![];
-            let mut buffer_assignments: HashMap<ConnectionInfo, (BufferRef, usize)> =
-                HashMap::with_capacity(graph.nodes.len() * 3 / 2);
-            let mut queue = VecDeque::with_capacity(graph.nodes.len() * 3 / 2);
-            queue.push_back(root.0);
-            while let Some(node) = queue.pop_front() {
-                {
-                    if visited.contains(&node) {
+                    let compensation = max_latency.unwrap() - latency;
+                    if compensation == 0 {
                         continue;
                     }
-                    let stack_height = queue.len();
-                    let node = graph.nodes.get(&node).unwrap();
-                    queue.extend(node.dependencies().filter_map(|n| {
-                        if visited.contains(&n.0) {
-                            None
-                        } else {
-                            Some(n.0)
-                        }
-                    }));
-                    if stack_height != queue.len() {
-                        queue.push_back(node.id);
-                        continue;
-                    };
-                    queue.extend(node.dependents().filter_map(|n| {
-                        if visited.contains(&n.0) {
-                            None
-                        } else {
-                            Some(n.0)
-                        }
-                    }));
+                    if let Some((node, delay)) = delays.get_mut(&edge) {
+                        *delay = compensation;
+                        graph.delays[node.0] = compensation;
+                    } else {
+                        graph.remove_edge(edge).unwrap();
+                        let delay_node = graph.node(&format!("delay-{}.{}-{}.{}", 
+                            &graph.node_names[edge.src_node.0], 
+                            &graph.port_names[edge.src_port.0], 
+                            &graph.node_names[edge.dst_node.0], 
+                            &graph.port_names[edge.dst_port.0], 
+                        ));
+                        let delay_input = graph.port(delay_node, edge.type_, "input").unwrap();
+                        let delay_output = graph.port(delay_node, edge.type_, "output").unwrap();
+                        graph.connect(edge.src_port, delay_input).unwrap();
+                        graph.connect(delay_output, edge.dst_port).unwrap();
+                        graph.delays[delay_node.0] = compensation;
+                        delays.insert(edge, (delay_node, compensation));
+                        insertions.push(delay_node);
+                    }
                 }
-                for inserted in
-                    solve_latency_reqs(graph, node, state, &mut delay_updates).collect::<Vec<_>>()
-                {
-                    dbg!(inserted);
-                    solve_buffer_reqs(graph, inserted.0, &mut buffer_assignments, &mut allocator);
-                    add_to_schedule(graph, inserted.0, &mut schedule, &buffer_assignments);
-                }
-                solve_buffer_reqs(graph, node, &mut buffer_assignments, &mut allocator);
-                add_to_schedule(graph, node, &mut schedule, &buffer_assignments);
-                visited.insert(node);
             }
-            schedule
-        }
-        // Launch!
-        driver(self, root, state)
+            insertions.into_iter()
+        };
+
+        let mut allocator = BufferAllocator::default();
+        let mut input_assignments: HashMap<(NodeRef, PortRef), Vec<Buffer>> = Default::default();
+        let mut output_assignments: HashMap<(NodeRef, PortRef), (Buffer, usize)> = Default::default();
+
+        let mut solve_buffer_requirements = |graph: &Graph, node: NodeRef| {
+            for port in &graph.ports[node.0] {
+                let (_, type_) = graph.port_data[port.0];
+                for output in graph.outgoing(*port) {
+                    let (buffer, count) = output_assignments.entry((node, *port)).or_insert((allocator.acquire(type_), 0));
+                    *count += 1;
+                    input_assignments.entry((output.dst_node, output.dst_port))
+                        .or_insert(vec![])
+                        .push(*buffer);
+                }
+                for input in graph.incoming(*port) {
+                    let (buffer, count) = output_assignments.get_mut(&(input.src_node, input.src_port)).expect("no output buffer assigned");
+                    *count -=  1; 
+                    if *count == 0 {
+                        allocator.release(*buffer);
+                    }
+                }
+                
+            }
+        };
+
+        let mut schedule: Vec<NodeRef> = vec![];
+        self.walk_mut(root, |graph, node| {
+            println!("compiling {}", graph.node_name(node).unwrap());
+            let insertions = solve_latency_requirements(graph, node);
+            for insertion in insertions {
+                solve_buffer_requirements(graph, insertion);
+                schedule.push(insertion);
+            }
+            solve_buffer_requirements(graph, node);
+            schedule.push(node);
+        });
+
+        schedule.into_iter()
+            .rev()
+            .map(move |node| {
+                let inputs: Vec<(PortRef, Vec<Buffer>)> = 
+                    self.ports[node.0]
+                        .iter()
+                        .filter_map(|port| 
+                            input_assignments
+                                .get(&(node, *port))
+                                .map(|buffers| (*port, buffers.clone()))
+                        ).collect::<Vec<_>>();
+                let outputs = self.ports[node.0]
+                        .iter()
+                        .filter_map(|port|{
+                            output_assignments.get(&(node, *port))
+                                .map(|(buffer, _)| (*port,*buffer))
+                        })
+                        .collect::<Vec<_>>();
+                Scheduled {
+                    node, 
+                    inputs, 
+                    outputs,
+                }
+            })
     }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct DelayInfo {
-    node: NodeRef,
-    delay: u64,
-}
-
-#[derive(Default)]
-pub struct State {
-    delays: HashMap<ConnectionInfo, DelayInfo>,
-}
-
-#[derive(Debug)]
-pub struct ScheduleEntry {
-    pub node: NodeRef,
-    pub buffers: Vec<(PortRef, BufferRef)>,
 }
 
 #[cfg(test)]
@@ -614,74 +458,81 @@ mod tests {
         let b = graph.node("B");
 
         let a_in = graph
-            .port(a, "input", PortType::Event)
+            .port(a, PortType::Event, "events")
             .expect("port was not created");
         let a_out = graph
-            .port(a, "output", PortType::Audio)
+            .port(a, PortType::Audio, "output")
             .expect("port was not created");
         let b_in = graph
-            .port(b, "input", PortType::Audio)
+            .port(b, PortType::Audio, "input")
             .expect("port was not created");
 
+        dbg!(&graph.port_count());
         graph.connect(a_out, b_in).expect("could not connect");
         graph
             .connect(a_in, b_in)
             .expect_err("connected mistyped ports");
-        graph.delete(a_in).expect("could not delete port");
+        graph.delete_port(a_in).expect("could not delete port");
         graph
             .disconnect(a_out, b_in)
             .expect("could not disconnect ports");
-        graph.delete(a).expect("could not delete");
+        graph.delete_node(a).expect("could not delete");
         graph
             .connect(a_out, b_in)
             .expect_err("connected node that doesn't exist");
     }
-    // #[test]
-    // fn simple_graph() {
-    //     let mut graph = Graph::default();
-    //     let (a, b, c, d) = (
-    //         graph.node("A"),
-    //         graph.node("B"),
-    //         graph.node("C"),
-    //         graph.node("D"),
-    //     );
-    //     let (a_out, b_out, c_out) = (
-    //         graph
-    //             .port(a, "output", PortType::Audio)
-    //             .expect("could not create output port"),
-    //         graph
-    //             .port(b, "output", PortType::Audio)
-    //             .expect("could not create output port"),
-    //         graph
-    //             .port(c, "output", PortType::Audio)
-    //             .expect("could not create output port"),
-    //     );
-    //     let (b_in, c_in, d_in) = (
-    //         graph
-    //             .port(b, "input", PortType::Audio)
-    //             .expect("could not create input"),
-    //         graph
-    //             .port(c, "input", PortType::Audio)
-    //             .expect("could not create input"),
-    //         graph
-    //             .port(d, "input", PortType::Audio)
-    //             .expect("could not create input"),
-    //     );
-    //     graph.set_delay(b, 2).expect("could not update delay of b");
-    //     graph.set_delay(c, 5).expect("coudl not update delay of c");
-    //     graph.connect(a_out, b_in).expect("could not connect");
-    //     graph.connect(a_out, c_in).expect("could not connect");
-    //     graph.connect(c_out, d_in).expect("could not connect");
-    //     graph.connect(b_out, d_in).expect("could not connect");
-    //     let mut state = State::default();
-    //     let schedule = graph.compile(d, &mut state);
-    //     assert_eq!(schedule.len(), 4);
-    //     for entry in schedule {
-    //         println!(
-    //             "process \"{}\" with buffers: {:?}",
-    //             graph.name(entry.node).unwrap(),
-    //             entry.buffers
-    //         );
-    //     }
-    // }
+    
+    #[test]
+    fn simple_graph() {
+        let mut graph = Graph::default();
+        let (a, b, c, d) = (
+            graph.node("A"),
+            graph.node("B"),
+            graph.node("C"),
+            graph.node("D"),
+        );
+        let (a_out, b_out, c_out) = (
+            graph
+                .port(a, PortType::Audio, "output")
+                .expect("could not create output port"),
+            graph
+                .port(b, PortType::Audio, "output")
+                .expect("could not create output port"),
+            graph
+                .port(c, PortType::Audio, "output")
+                .expect("could not create output port"),
+        );
+
+        let (b_in, c_in, d_in) = (
+            graph
+                .port(b, PortType::Audio, "input")
+                .expect("could not create input"),
+            graph
+                .port(c, PortType::Audio, "input")
+                .expect("could not create input"),
+            graph
+                .port(d, PortType::Audio, "input")
+                .expect("could not create input"),
+        );
+        graph.set_delay(b, 2).expect("could not update delay of b");
+        graph.set_delay(c, 5).expect("coudl not update delay of c");
+        graph.connect(a_out, b_in).expect("could not connect");
+        graph.connect(a_out, c_in).expect("could not connect");
+        graph.connect(c_out, d_in).expect("could not connect");
+        graph.connect(b_out, d_in).expect("could not connect");
+        let schedule = graph.compile(d).collect::<Vec<_>>();
+        for entry in schedule {
+            let node_name = graph.node_name(entry.node).unwrap(); 
+            println!("process {}:", node_name);
+            for (port, buffers) in entry.inputs {
+                println!("    {} => ", graph.port_name(port).unwrap()); 
+                for b in buffers {
+                    println!("        {}", b.index);
+                }
+            }
+            for (port, buf) in entry.outputs {
+                println!("    {} => {}", graph.port_name(port).unwrap(), buf.index);
+            }
+        }
+    }
 }
