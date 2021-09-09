@@ -25,7 +25,7 @@ let out_port = graph.port(output, DefaultPortType::Audio, "mixbus")?;
 graph.connect(port1, out_port)?;
 graph.connect(port2, out_port)?;
 
-let schedule = graph.compile(output);
+let schedule = graph.compile();
 for entry in schedule {
     let node_name = entry.node;
     // inputs may have multiple buffers to handle.
