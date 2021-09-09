@@ -228,8 +228,6 @@ where
     P: Debug + Clone,
     PT: PortType + PartialEq,
 {
-    cycle_check_stack: Vec<PortRef>,
-
     walk_queue: Option<VecDeque<NodeRef>>,
     walk_visited: Option<FnvHashSet<NodeRef>>,
 
@@ -256,7 +254,6 @@ where
 {
     fn default() -> Self {
         Self {
-            cycle_check_stack: Vec::new(),
             walk_queue: Some(VecDeque::new()),
             walk_visited: Some(FnvHashSet::default()),
             latencies: Some(Vec::new()),
@@ -386,7 +383,6 @@ where
     ) -> Result<(), Error> {
         self.port_check(src)?;
         self.port_check(dst)?;
-        self.cycle_check(src, dst, mem_cache)?;
 
         for edge in self.incoming(dst) {
             if edge.src_port == src {
@@ -403,6 +399,13 @@ where
         if src_type != dst_type {
             return Err(Error::InvalidPortType);
         }
+
+        let mut queue = mem_cache.walk_queue.take().unwrap_or_default();
+        let mut queued = mem_cache.walk_visited.take().unwrap_or_default();
+        self.cycle_check(src_node, dst_node, &mut queue, &mut queued)?;
+        mem_cache.walk_queue = Some(queue);
+        mem_cache.walk_visited = Some(queued);
+
         let edge = Edge {
             src_node,
             src_port: src,
@@ -482,23 +485,34 @@ where
         self.port_data.len()
     }
 
-    // TODO: FIXME!!!!
+    /// Check that adding an edge `src` -> `dst` won't create a cycle. Must be called
+    /// before each edge addition.
+    ///
+    /// TODO: Optimize for adding multiple edges at once. (pass over the whole graph)
     fn cycle_check(
         &self,
-        src: PortRef,
-        dst: PortRef,
-        mem_cache: &mut MemCache<N, P, PT>,
+        src: NodeRef,
+        dst: NodeRef,
+        queue: &mut VecDeque<NodeRef>,
+        queued: &mut FnvHashSet<NodeRef>,
     ) -> Result<(), Error> {
-        mem_cache.cycle_check_stack.clear();
-        mem_cache.cycle_check_stack.push(src);
+        queue.clear();
+        queued.clear();
+        queue.push_back(dst);
+        queued.insert(dst);
 
-        while let Some(src) = mem_cache.cycle_check_stack.pop() {
-            if src == dst {
+        while let Some(node) = queue.pop_front() {
+            if node == src {
                 return Err(Error::Cycle);
             }
-            mem_cache
-                .cycle_check_stack
-                .extend(self.outgoing(src).map(|e: Edge<PT>| e.dst_port));
+            queue.extend(self.dependents(node).filter(|n| {
+                if queued.contains(n) {
+                    false
+                } else {
+                    queued.insert(*n);
+                    true
+                }
+            }));
         }
         Ok(())
     }
@@ -873,7 +887,6 @@ mod tests {
             .connect(b_out, d_in)
             .expect_err("Desination ports should not be able to have multiple source ports.");
 
-        // TODO: FIXME!!!!
         graph
             .connect(b_out, a_in)
             .expect_err("Cycles should not be allowed");
