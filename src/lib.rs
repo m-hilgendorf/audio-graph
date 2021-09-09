@@ -507,14 +507,12 @@ where
             if node == src {
                 return Err(Error::Cycle);
             }
-            queue.extend(self.dependents(node).filter(|n| {
-                if queued.contains(n) {
-                    false
-                } else {
-                    queued.insert(*n);
-                    true
+            for dependent in self.dependents(node) {
+                if !queued.contains(&dependent) {
+                    queue.push_back(dependent);
+                    queued.insert(dependent);
                 }
-            }));
+            }
         }
         Ok(())
     }
