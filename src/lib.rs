@@ -293,7 +293,6 @@ where
     P: Debug + Clone,
     PT: PortType + PartialEq,
 {
-    #[inline]
     pub fn node(&mut self, ident: N) -> NodeRef {
         self.node_(NodeIdent::User(ident))
     }
@@ -316,7 +315,6 @@ where
         }
     }
 
-    #[inline]
     pub fn port(&mut self, node: NodeRef, type_: PT, ident: P) -> Result<PortRef, Error> {
         self.port_(node, type_, PortIdent::User(ident))
     }
@@ -680,7 +678,8 @@ where
         // This won't panic because this is always `Some` on the user's end.
         let mut mem_cache = self.mem_cache.take().unwrap();
 
-        let mut _scheduled = mem_cache.scheduled.take().unwrap_or_default();
+        let mut scheduled = mem_cache.scheduled.take().unwrap_or_default();
+        scheduled.clear();
 
         mem_cache.all_latencies.clear();
         mem_cache.all_latencies.resize(self.node_count(), None);
@@ -710,13 +709,13 @@ where
         let mut edges = mem_cache.edges.take().unwrap_or_default();
         let mut insertions = mem_cache.insertions.take().unwrap_or_default();
         let mut queue = mem_cache.walk_queue.take().unwrap_or_default();
-        let mut visisted = mem_cache.walk_visited.take().unwrap_or_default();
+        let mut visited = mem_cache.walk_visited.take().unwrap_or_default();
 
         delay_comp_graph.walk_mut(
             root,
             &mut mem_cache,
             &mut queue,
-            &mut visisted,
+            &mut visited,
             |graph, node, mem_cache| {
                 // Maybe use the log crate for this to avoid polluting the user's output?
                 // println!("compiling {}", graph.node_name(node).unwrap());
@@ -739,46 +738,43 @@ where
             },
         );
 
-        _scheduled = scheduled_nodes
-            .iter()
-            .rev()
-            .map(|node| {
-                let node_ident = delay_comp_graph.node_identifiers[node.0].clone();
+        for node in scheduled_nodes.iter().rev() {
+            let node_ident = delay_comp_graph.node_identifiers[node.0].clone();
 
-                let inputs: Vec<(PortIdent<P>, Vec<Buffer<PT>>)> = delay_comp_graph.ports[node.0]
-                    .iter()
-                    .filter_map(|port| {
-                        mem_cache
-                            .input_assignments
-                            .get(&(*node, *port))
-                            .map(|buffers| {
-                                (
-                                    delay_comp_graph.port_identifiers[port.0].clone(),
-                                    buffers.clone(),
-                                )
-                            })
-                    })
-                    .collect::<Vec<_>>();
-                let outputs: Vec<(PortIdent<P>, Buffer<PT>)> = delay_comp_graph.ports[node.0]
-                    .iter()
-                    .filter_map(|port| {
-                        mem_cache
-                            .output_assignments
-                            .get(&(*node, *port))
-                            .map(|(buffer, _)| {
-                                (delay_comp_graph.port_identifiers[port.0].clone(), *buffer)
-                            })
-                    })
-                    .collect::<Vec<_>>();
-                Scheduled {
-                    node: node_ident,
-                    inputs,
-                    outputs,
-                }
-            })
-            .collect::<Vec<_>>();
+            let inputs: Vec<(PortIdent<P>, Vec<Buffer<PT>>)> = delay_comp_graph.ports[node.0]
+                .iter()
+                .filter_map(|port| {
+                    mem_cache
+                        .input_assignments
+                        .get(&(*node, *port))
+                        .map(|buffers| {
+                            (
+                                delay_comp_graph.port_identifiers[port.0].clone(),
+                                buffers.clone(),
+                            )
+                        })
+                })
+                .collect::<Vec<_>>();
+            let outputs: Vec<(PortIdent<P>, Buffer<PT>)> = delay_comp_graph.ports[node.0]
+                .iter()
+                .filter_map(|port| {
+                    mem_cache
+                        .output_assignments
+                        .get(&(*node, *port))
+                        .map(|(buffer, _)| {
+                            (delay_comp_graph.port_identifiers[port.0].clone(), *buffer)
+                        })
+                })
+                .collect::<Vec<_>>();
 
-        mem_cache.scheduled = Some(_scheduled);
+            scheduled.push(Scheduled {
+                node: node_ident,
+                inputs,
+                outputs,
+            });
+        }
+
+        mem_cache.scheduled = Some(scheduled);
         mem_cache.scheduled_nodes = Some(scheduled_nodes);
         mem_cache.delay_comp_graph = Some(delay_comp_graph);
         mem_cache.latencies = Some(latencies);
@@ -786,7 +782,7 @@ where
         mem_cache.edges = Some(edges);
         mem_cache.insertions = Some(insertions);
         mem_cache.walk_queue = Some(queue);
-        mem_cache.walk_visited = Some(visisted);
+        mem_cache.walk_visited = Some(visited);
 
         self.mem_cache = Some(mem_cache);
 
