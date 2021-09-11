@@ -46,7 +46,7 @@ pub enum PortIdent<T: Debug + Clone> {
     User(T),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct NodeRef(usize);
 
 impl From<NodeRef> for usize {
@@ -55,7 +55,7 @@ impl From<NodeRef> for usize {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct PortRef(usize);
 impl Borrow<usize> for NodeRef {
     fn borrow(&self) -> &'_ usize {
