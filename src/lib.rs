@@ -458,16 +458,28 @@ where
         Ok(&self.node_identifiers[node.0])
     }
 
-    pub fn node_check(&self, n: NodeRef) -> Result<(), Error> {
-        if n.0 < self.node_count() && !self.free_nodes.contains(&n) {
+    pub fn set_port_ident(&mut self, port: PortRef, ident: P) -> Result<(), Error> {
+        self.port_check(port)?;
+        self.port_identifiers[port.0] = PortIdent::User(ident);
+        Ok(())
+    }
+
+    pub fn set_node_ident(&mut self, node: NodeRef, ident: N) -> Result<(), Error> {
+        self.node_check(node)?;
+        self.node_identifiers[node.0] = NodeIdent::User(ident);
+        Ok(())
+    }
+
+    pub fn node_check(&self, node: NodeRef) -> Result<(), Error> {
+        if node.0 < self.node_count() && !self.free_nodes.contains(&node) {
             Ok(())
         } else {
             Err(Error::NodeDoesNotExist)
         }
     }
 
-    pub fn port_check(&self, p: PortRef) -> Result<(), Error> {
-        if p.0 < self.port_count() && !self.free_ports.contains(&p) {
+    pub fn port_check(&self, port: PortRef) -> Result<(), Error> {
+        if port.0 < self.port_count() && !self.free_ports.contains(&port) {
             Ok(())
         } else {
             Err(Error::PortDoesNotExist)
