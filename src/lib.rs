@@ -228,10 +228,9 @@ where
     P: Debug + Clone,
     PT: PortType + PartialEq,
 {
-    cycle_check_stack: Vec<PortRef>,
-
     walk_queue: Option<VecDeque<NodeRef>>,
-    walk_visited: Option<FnvHashSet<NodeRef>>,
+    walk_indegree: Option<FnvHashMap<NodeRef, usize>>,
+    cycle_queued: Option<FnvHashSet<NodeRef>>,
 
     latencies: Option<Vec<u64>>,
     insertions: Option<Vec<NodeRef>>,
@@ -256,9 +255,9 @@ where
 {
     fn default() -> Self {
         Self {
-            cycle_check_stack: Vec::new(),
             walk_queue: Some(VecDeque::new()),
-            walk_visited: Some(FnvHashSet::default()),
+            walk_indegree: Some(FnvHashMap::default()),
+            cycle_queued: Some(FnvHashSet::default()),
             latencies: Some(Vec::new()),
             insertions: Some(Vec::new()),
             all_latencies: Vec::new(),
@@ -386,7 +385,6 @@ where
     ) -> Result<(), Error> {
         self.port_check(src)?;
         self.port_check(dst)?;
-        self.cycle_check(src, dst, mem_cache)?;
 
         for edge in self.incoming(dst) {
             if edge.src_port == src {
@@ -403,6 +401,13 @@ where
         if src_type != dst_type {
             return Err(Error::InvalidPortType);
         }
+
+        let mut queue = mem_cache.walk_queue.take().unwrap_or_default();
+        let mut queued = mem_cache.cycle_queued.take().unwrap_or_default();
+        self.cycle_check(src_node, dst_node, &mut queue, &mut queued)?;
+        mem_cache.walk_queue = Some(queue);
+        mem_cache.cycle_queued = Some(queued);
+
         let edge = Edge {
             src_node,
             src_port: src,
@@ -494,23 +499,32 @@ where
         self.port_data.len()
     }
 
-    // TODO: FIXME!!!!
+    /// Check that adding an edge `src` -> `dst` won't create a cycle. Must be called
+    /// before each edge addition.
+    ///
+    /// TODO: Optimize for adding multiple edges at once. (pass over the whole graph)
     fn cycle_check(
         &self,
-        src: PortRef,
-        dst: PortRef,
-        mem_cache: &mut MemCache<N, P, PT>,
+        src: NodeRef,
+        dst: NodeRef,
+        queue: &mut VecDeque<NodeRef>,
+        queued: &mut FnvHashSet<NodeRef>,
     ) -> Result<(), Error> {
-        mem_cache.cycle_check_stack.clear();
-        mem_cache.cycle_check_stack.push(src);
+        queue.clear();
+        queued.clear();
+        queue.push_back(dst);
+        queued.insert(dst);
 
-        while let Some(src) = mem_cache.cycle_check_stack.pop() {
-            if src == dst {
+        while let Some(node) = queue.pop_front() {
+            if node == src {
                 return Err(Error::Cycle);
             }
-            mem_cache
-                .cycle_check_stack
-                .extend(self.outgoing(src).map(|e: Edge<PT>| e.dst_port));
+            for dependent in self.dependents(node) {
+                if !queued.contains(&dependent) {
+                    queue.push_back(dependent);
+                    queued.insert(dependent);
+                }
+            }
         }
         Ok(())
     }
@@ -567,35 +581,46 @@ where
         })
     }
 
+    /// Walk graph in topological order using Kahn's algorithm.
     fn walk_mut(
         &mut self,
-        root: NodeRef,
         mem_cache: &mut MemCache<N, P, PT>,
         queue: &mut VecDeque<NodeRef>,
-        visited: &mut FnvHashSet<NodeRef>,
+        indegree: &mut FnvHashMap<NodeRef, usize>,
         mut f: impl FnMut(&mut Graph<N, P, PT>, NodeRef, &mut MemCache<N, P, PT>),
     ) {
         queue.clear();
-        visited.clear();
+        indegree.clear();
 
-        queue.push_back(root);
-        while let Some(node) = queue.pop_front() {
-            if visited.contains(&node) {
-                continue;
-            }
-            let len = queue.len();
-            queue.extend(self.dependencies(node).filter(|n| !visited.contains(n)));
-            if queue.len() != len {
+        for node_index in 0..self.node_count() {
+            indegree.insert(NodeRef(node_index), 0);
+        }
+        for node in &self.free_nodes {
+            indegree.remove(node);
+        }
+
+        for (&node, value) in indegree.iter_mut() {
+            *value = self.dependencies(node).count();
+            if *value == 0 {
                 queue.push_back(node);
-                continue;
             }
+        }
+
+        while let Some(node) = queue.pop_front() {
             (&mut f)(self, node, mem_cache);
-            queue.extend(self.dependents(node).filter(|n| !visited.contains(n)));
-            visited.insert(node);
+            for dependent in self.dependents(node) {
+                let value = indegree
+                    .get_mut(&dependent)
+                    .expect("edge refers to freed node");
+                *value = value.checked_sub(1).expect("corrupted graph");
+                if *value == 0 {
+                    queue.push_back(dependent);
+                }
+            }
         }
     }
 
-    pub fn compile(&mut self, root: NodeRef) -> &[Scheduled<N, P, PT>] {
+    pub fn compile(&mut self) -> &[Scheduled<N, P, PT>] {
         let solve_latency_requirements =
             |graph: &mut Graph<N, P, PT>,
              node: NodeRef,
@@ -721,13 +746,12 @@ where
         let mut edges = mem_cache.edges.take().unwrap_or_default();
         let mut insertions = mem_cache.insertions.take().unwrap_or_default();
         let mut queue = mem_cache.walk_queue.take().unwrap_or_default();
-        let mut visited = mem_cache.walk_visited.take().unwrap_or_default();
+        let mut indegree = mem_cache.walk_indegree.take().unwrap_or_default();
 
         delay_comp_graph.walk_mut(
-            root,
             &mut mem_cache,
             &mut queue,
-            &mut visited,
+            &mut indegree,
             |graph, node, mem_cache| {
                 // Maybe use the log crate for this to avoid polluting the user's output?
                 // println!("compiling {}", graph.node_name(node).unwrap());
@@ -750,7 +774,7 @@ where
             },
         );
 
-        for node in scheduled_nodes.iter().rev() {
+        for node in scheduled_nodes.iter() {
             let node_ident = delay_comp_graph.node_identifiers[node.0].clone();
 
             let inputs: Vec<(PortIdent<P>, Vec<Buffer<PT>>)> = delay_comp_graph.ports[node.0]
@@ -794,7 +818,7 @@ where
         mem_cache.edges = Some(edges);
         mem_cache.insertions = Some(insertions);
         mem_cache.walk_queue = Some(queue);
-        mem_cache.walk_visited = Some(visited);
+        mem_cache.walk_indegree = Some(indegree);
 
         self.mem_cache = Some(mem_cache);
 
@@ -885,12 +909,12 @@ mod tests {
             .connect(b_out, d_in)
             .expect_err("Desination ports should not be able to have multiple source ports.");
 
-        // TODO: FIXME!!!!
         graph
             .connect(b_out, a_in)
             .expect_err("Cycles should not be allowed");
 
-        for entry in graph.compile(d) {
+        let mut last_node = None;
+        for entry in graph.compile() {
             println!("process {:?}:", entry.node);
             for (port, buffers) in entry.inputs.iter() {
                 println!("    {:?} => ", port);
@@ -901,6 +925,8 @@ mod tests {
             for (port, buf) in entry.outputs.iter() {
                 println!("    {:?} => {}", port, buf.index);
             }
+            last_node = Some(entry.node.clone());
         }
+        assert!(matches!(last_node, Some(NodeIdent::User("D"))));
     }
 }
