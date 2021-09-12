@@ -145,7 +145,7 @@ where
     free_nodes: Vec<NodeRef>,
     free_ports: Vec<PortRef>,
 
-    mem_cache: Option<MemCache<N, P, PT>>,
+    heap_store: Option<HeapStore<N, P, PT>>,
 }
 
 impl<N, P, PT> Clone for Graph<N, P, PT>
@@ -166,7 +166,7 @@ where
             free_ports: self.free_ports.clone(),
 
             // We don't want to clone the cache.
-            mem_cache: None,
+            heap_store: None,
         }
     }
 }
@@ -187,7 +187,7 @@ where
             node_identifiers: Vec::new(),
             free_nodes: Vec::new(),
             free_ports: Vec::new(),
-            mem_cache: Some(MemCache::default()),
+            heap_store: Some(HeapStore::default()),
         }
     }
 }
@@ -222,7 +222,7 @@ impl<PT: PortType + PartialEq> BufferAllocator<PT> {
     }
 }
 
-pub struct MemCache<N, P, PT>
+pub struct HeapStore<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
@@ -247,7 +247,7 @@ where
     scheduled: Option<Vec<Scheduled<N, P, PT>>>,
 }
 
-impl<N, P, PT> Default for MemCache<N, P, PT>
+impl<N, P, PT> Default for HeapStore<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
@@ -498,9 +498,9 @@ where
     /// TODO: Optimize for adding multiple edges at once. (pass over the whole graph)
     fn cycle_check(&mut self, src: NodeRef, dst: NodeRef) -> Result<(), Error> {
         // This won't panic because this is always `Some` on the user's end.
-        let mut mem_cache = self.mem_cache.take().unwrap();
-        let mut queue = mem_cache.walk_queue.take().unwrap();
-        let mut queued = mem_cache.cycle_queued.take().unwrap();
+        let mut heap_store = self.heap_store.take().unwrap();
+        let mut queue = heap_store.walk_queue.take().unwrap();
+        let mut queued = heap_store.cycle_queued.take().unwrap();
 
         queue.clear();
         queued.clear();
@@ -509,9 +509,9 @@ where
 
         while let Some(node) = queue.pop_front() {
             if node == src {
-                mem_cache.walk_queue = Some(queue);
-                mem_cache.cycle_queued = Some(queued);
-                self.mem_cache = Some(mem_cache);
+                heap_store.walk_queue = Some(queue);
+                heap_store.cycle_queued = Some(queued);
+                self.heap_store = Some(heap_store);
 
                 return Err(Error::Cycle);
             }
@@ -523,9 +523,9 @@ where
             }
         }
 
-        mem_cache.walk_queue = Some(queue);
-        mem_cache.cycle_queued = Some(queued);
-        self.mem_cache = Some(mem_cache);
+        heap_store.walk_queue = Some(queue);
+        heap_store.cycle_queued = Some(queued);
+        self.heap_store = Some(heap_store);
 
         Ok(())
     }
@@ -585,10 +585,10 @@ where
     /// Walk graph in topological order using Kahn's algorithm.
     fn walk_mut(
         &mut self,
-        mem_cache: &mut MemCache<N, P, PT>,
+        heap_store: &mut HeapStore<N, P, PT>,
         queue: &mut VecDeque<NodeRef>,
         indegree: &mut FnvHashMap<NodeRef, usize>,
-        mut f: impl FnMut(&mut Graph<N, P, PT>, NodeRef, &mut MemCache<N, P, PT>),
+        mut f: impl FnMut(&mut Graph<N, P, PT>, NodeRef, &mut HeapStore<N, P, PT>),
     ) {
         queue.clear();
         indegree.clear();
@@ -608,7 +608,7 @@ where
         }
 
         while let Some(node) = queue.pop_front() {
-            (&mut f)(self, node, mem_cache);
+            (&mut f)(self, node, heap_store);
             for dependent in self.dependents(node) {
                 let value = indegree
                     .get_mut(&dependent)
@@ -625,21 +625,21 @@ where
         let solve_latency_requirements =
             |graph: &mut Graph<N, P, PT>,
              node: NodeRef,
-             mem_cache: &mut MemCache<N, P, PT>,
+             heap_store: &mut HeapStore<N, P, PT>,
              latencies: &mut Vec<u64>,
              deps: &mut Vec<NodeRef>,
              edges: &mut Vec<Edge<PT>>,
              insertions: &mut Vec<NodeRef>| {
                 *latencies = graph
                     .dependencies(node)
-                    .map(|n| mem_cache.all_latencies[n.0].unwrap() + graph.delays[n.0])
+                    .map(|n| heap_store.all_latencies[n.0].unwrap() + graph.delays[n.0])
                     .collect::<Vec<_>>();
 
                 *deps = graph.dependencies(node).collect();
 
                 let max_latency = latencies.iter().max().copied().or(Some(0));
 
-                mem_cache.all_latencies[node.0] = max_latency;
+                heap_store.all_latencies[node.0] = max_latency;
 
                 insertions.clear();
 
@@ -655,7 +655,7 @@ where
                         if compensation == 0 {
                             continue;
                         }
-                        if let Some((node, delay)) = mem_cache.delays.get_mut(edge) {
+                        if let Some((node, delay)) = heap_store.delays.get_mut(edge) {
                             *delay = compensation;
                             graph.delays[node.0] = compensation;
                         } else {
@@ -673,7 +673,7 @@ where
                             graph.connect_(edge.src_port, delay_input).unwrap();
                             graph.connect_(delay_output, edge.dst_port).unwrap();
                             graph.delays[delay_node.0] = compensation;
-                            mem_cache.delays.insert(*edge, (delay_node, compensation));
+                            heap_store.delays.insert(*edge, (delay_node, compensation));
                             insertions.push(delay_node);
                         }
                     }
@@ -681,92 +681,92 @@ where
             };
 
         let solve_buffer_requirements =
-            |graph: &Graph<N, P, PT>, node: NodeRef, mem_cache: &mut MemCache<N, P, PT>| {
+            |graph: &Graph<N, P, PT>, node: NodeRef, heap_store: &mut HeapStore<N, P, PT>| {
                 for port in &graph.ports[node.0] {
                     let (_, type_) = graph.port_data[port.0];
                     for output in graph.outgoing(*port) {
-                        let (buffer, count) = mem_cache
+                        let (buffer, count) = heap_store
                             .output_assignments
                             .entry((node, *port))
-                            .or_insert((mem_cache.allocator.acquire(type_), 0));
+                            .or_insert((heap_store.allocator.acquire(type_), 0));
                         *count += 1;
-                        mem_cache
+                        heap_store
                             .input_assignments
                             .entry((output.dst_node, output.dst_port))
                             .or_insert(vec![])
                             .push(*buffer);
                     }
                     for input in graph.incoming(*port) {
-                        let (buffer, count) = mem_cache
+                        let (buffer, count) = heap_store
                             .output_assignments
                             .get_mut(&(input.src_node, input.src_port))
                             .expect("no output buffer assigned");
                         *count -= 1;
                         if *count == 0 {
-                            mem_cache.allocator.release(*buffer);
+                            heap_store.allocator.release(*buffer);
                         }
                     }
                 }
             };
 
         // This won't panic because this is always `Some` on the user's end.
-        let mut mem_cache = self.mem_cache.take().unwrap();
+        let mut heap_store = self.heap_store.take().unwrap();
 
-        let mut scheduled = mem_cache.scheduled.take().unwrap_or_default();
+        let mut scheduled = heap_store.scheduled.take().unwrap_or_default();
         scheduled.clear();
 
-        mem_cache.all_latencies.clear();
-        mem_cache.all_latencies.resize(self.node_count(), None);
-        mem_cache.delays.clear();
+        heap_store.all_latencies.clear();
+        heap_store.all_latencies.resize(self.node_count(), None);
+        heap_store.delays.clear();
 
-        mem_cache.allocator.clear();
+        heap_store.allocator.clear();
 
-        mem_cache.input_assignments.clear();
-        mem_cache.output_assignments.clear();
+        heap_store.input_assignments.clear();
+        heap_store.output_assignments.clear();
 
-        let mut scheduled_nodes = mem_cache.scheduled_nodes.take().unwrap_or_default();
+        let mut scheduled_nodes = heap_store.scheduled_nodes.take().unwrap_or_default();
         scheduled_nodes.clear();
 
         // This is arguably quite expensive, but the reason is that we don't want to add any delay
         // compensation nodes to the user's graph (We only want to add them to the schedule).
         // The fact that we're memory caching the previous graph should help some.
         let mut delay_comp_graph =
-            if let Some(mut delay_comp_graph) = mem_cache.delay_comp_graph.take() {
+            if let Some(mut delay_comp_graph) = heap_store.delay_comp_graph.take() {
                 *delay_comp_graph = self.clone();
                 delay_comp_graph
             } else {
                 Box::new(self.clone())
             };
 
-        let mut latencies = mem_cache.latencies.take().unwrap_or_default();
-        let mut deps = mem_cache.deps.take().unwrap_or_default();
-        let mut edges = mem_cache.edges.take().unwrap_or_default();
-        let mut insertions = mem_cache.insertions.take().unwrap_or_default();
-        let mut queue = mem_cache.walk_queue.take().unwrap_or_default();
-        let mut indegree = mem_cache.walk_indegree.take().unwrap_or_default();
+        let mut latencies = heap_store.latencies.take().unwrap_or_default();
+        let mut deps = heap_store.deps.take().unwrap_or_default();
+        let mut edges = heap_store.edges.take().unwrap_or_default();
+        let mut insertions = heap_store.insertions.take().unwrap_or_default();
+        let mut queue = heap_store.walk_queue.take().unwrap_or_default();
+        let mut indegree = heap_store.walk_indegree.take().unwrap_or_default();
 
         delay_comp_graph.walk_mut(
-            &mut mem_cache,
+            &mut heap_store,
             &mut queue,
             &mut indegree,
-            |graph, node, mem_cache| {
+            |graph, node, heap_store| {
                 // Maybe use the log crate for this to avoid polluting the user's output?
                 // println!("compiling {}", graph.node_name(node).unwrap());
 
                 solve_latency_requirements(
                     graph,
                     node,
-                    mem_cache,
+                    heap_store,
                     &mut latencies,
                     &mut deps,
                     &mut edges,
                     &mut insertions,
                 );
                 for insertion in insertions.iter() {
-                    solve_buffer_requirements(graph, *insertion, mem_cache);
+                    solve_buffer_requirements(graph, *insertion, heap_store);
                     scheduled_nodes.push(*insertion);
                 }
-                solve_buffer_requirements(graph, node, mem_cache);
+                solve_buffer_requirements(graph, node, heap_store);
                 scheduled_nodes.push(node);
             },
         );
@@ -777,7 +777,7 @@ where
             let inputs: Vec<(PortIdent<P>, Vec<Buffer<PT>>)> = delay_comp_graph.ports[node.0]
                 .iter()
                 .filter_map(|port| {
-                    mem_cache
+                    heap_store
                         .input_assignments
                         .get(&(*node, *port))
                         .map(|buffers| {
@@ -791,7 +791,7 @@ where
             let outputs: Vec<(PortIdent<P>, Buffer<PT>)> = delay_comp_graph.ports[node.0]
                 .iter()
                 .filter_map(|port| {
-                    mem_cache
+                    heap_store
                         .output_assignments
                         .get(&(*node, *port))
                         .map(|(buffer, _)| {
@@ -807,19 +807,24 @@ where
             });
         }
 
-        mem_cache.scheduled = Some(scheduled);
-        mem_cache.scheduled_nodes = Some(scheduled_nodes);
-        mem_cache.delay_comp_graph = Some(delay_comp_graph);
-        mem_cache.latencies = Some(latencies);
-        mem_cache.deps = Some(deps);
-        mem_cache.edges = Some(edges);
-        mem_cache.insertions = Some(insertions);
-        mem_cache.walk_queue = Some(queue);
-        mem_cache.walk_indegree = Some(indegree);
+        heap_store.scheduled = Some(scheduled);
+        heap_store.scheduled_nodes = Some(scheduled_nodes);
+        heap_store.delay_comp_graph = Some(delay_comp_graph);
+        heap_store.latencies = Some(latencies);
+        heap_store.deps = Some(deps);
+        heap_store.edges = Some(edges);
+        heap_store.insertions = Some(insertions);
+        heap_store.walk_queue = Some(queue);
+        heap_store.walk_indegree = Some(indegree);
 
-        self.mem_cache = Some(mem_cache);
+        self.heap_store = Some(heap_store);
 
-        self.mem_cache.as_ref().unwrap().scheduled.as_ref().unwrap()
+        self.heap_store
+            .as_ref()
+            .unwrap()
+            .scheduled
+            .as_ref()
+            .unwrap()
     }
 }
 
