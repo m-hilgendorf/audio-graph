@@ -34,18 +34,6 @@ impl std::fmt::Display for Error {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum NodeIdent<T: Debug + Clone, PT: PortType + PartialEq> {
-    DelayComp(PT),
-    User(T),
-}
-
-#[derive(Debug, Clone)]
-pub enum PortIdent<T: Debug + Clone> {
-    DelayComp,
-    User(T),
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct NodeRef(usize);
 
@@ -137,38 +125,16 @@ where
     PT: PortType + PartialEq,
 {
     edges: Vec<Vec<Edge<PT>>>,
+    edge_delay_comps: FnvHashMap<Edge<PT>, u64>,
     ports: Vec<Vec<PortRef>>,
     delays: Vec<u64>,
-    port_data: Vec<(NodeRef, PT)>,
-    port_identifiers: Vec<PortIdent<P>>,
-    node_identifiers: Vec<NodeIdent<N, PT>>,
+    port_data: Vec<(NodeRef, PT, u64)>,
+    port_identifiers: Vec<P>,
+    node_identifiers: Vec<N>,
     free_nodes: Vec<NodeRef>,
     free_ports: Vec<PortRef>,
 
     heap_store: Option<HeapStore<N, P, PT>>,
-}
-
-impl<N, P, PT> Clone for Graph<N, P, PT>
-where
-    N: Debug + Clone,
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
-{
-    fn clone(&self) -> Self {
-        Self {
-            edges: self.edges.clone(),
-            ports: self.ports.clone(),
-            delays: self.delays.clone(),
-            port_data: self.port_data.clone(),
-            port_identifiers: self.port_identifiers.clone(),
-            node_identifiers: self.node_identifiers.clone(),
-            free_nodes: self.free_nodes.clone(),
-            free_ports: self.free_ports.clone(),
-
-            // We don't want to clone the cache.
-            heap_store: None,
-        }
-    }
 }
 
 impl<N, P, PT> Default for Graph<N, P, PT>
@@ -180,6 +146,7 @@ where
     fn default() -> Self {
         Self {
             edges: Vec::new(),
+            edge_delay_comps: FnvHashMap::default(),
             ports: Vec::new(),
             delays: Vec::new(),
             port_data: Vec::new(),
@@ -233,17 +200,13 @@ where
     cycle_queued: Option<FnvHashSet<NodeRef>>,
 
     latencies: Option<Vec<u64>>,
-    insertions: Option<Vec<NodeRef>>,
     all_latencies: Vec<Option<u64>>,
-    delays: FnvHashMap<Edge<PT>, (NodeRef, u64)>,
     deps: Option<Vec<NodeRef>>,
-    edges: Option<Vec<Edge<PT>>>,
     allocator: BufferAllocator<PT>,
-    input_assignments: FnvHashMap<(NodeRef, PortRef), Vec<Buffer<PT>>>,
+    input_assignments: FnvHashMap<(NodeRef, PortRef), Buffer<PT>>,
     output_assignments: FnvHashMap<(NodeRef, PortRef), (Buffer<PT>, usize)>,
     scheduled_nodes: Option<Vec<NodeRef>>,
 
-    delay_comp_graph: Option<Box<Graph<N, P, PT>>>,
     scheduled: Option<Vec<Scheduled<N, P, PT>>>,
 }
 
@@ -259,19 +222,36 @@ where
             walk_indegree: Some(FnvHashMap::default()),
             cycle_queued: Some(FnvHashSet::default()),
             latencies: Some(Vec::new()),
-            insertions: Some(Vec::new()),
             all_latencies: Vec::new(),
-            delays: FnvHashMap::default(),
             deps: Some(Vec::new()),
-            edges: Some(Vec::new()),
             allocator: BufferAllocator::default(),
             input_assignments: FnvHashMap::default(),
             output_assignments: FnvHashMap::default(),
             scheduled_nodes: Some(Vec::new()),
-            delay_comp_graph: None,
             scheduled: None,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ScheduledInput<P, PT>
+where
+    P: Debug + Clone,
+    PT: PortType + PartialEq,
+{
+    port: P,
+    buffer: Buffer<PT>,
+    delay_comp: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScheduledOutput<P, PT>
+where
+    P: Debug + Clone,
+    PT: PortType + PartialEq,
+{
+    port: P,
+    buffer: Buffer<PT>,
 }
 
 #[derive(Clone, Debug)]
@@ -281,9 +261,9 @@ where
     P: Debug + Clone,
     PT: PortType + PartialEq,
 {
-    pub node: NodeIdent<N, PT>,
-    pub inputs: Vec<(PortIdent<P>, Vec<Buffer<PT>>)>,
-    pub outputs: Vec<(PortIdent<P>, Buffer<PT>)>,
+    pub node: N,
+    pub inputs: Vec<ScheduledInput<P, PT>>,
+    pub outputs: Vec<ScheduledOutput<P, PT>>,
 }
 
 impl<N, P, PT> Graph<N, P, PT>
@@ -293,10 +273,6 @@ where
     PT: PortType + PartialEq,
 {
     pub fn node(&mut self, ident: N) -> NodeRef {
-        self.node_(NodeIdent::User(ident))
-    }
-
-    fn node_(&mut self, ident: NodeIdent<N, PT>) -> NodeRef {
         if let Some(node) = self.free_nodes.pop() {
             let id = node.0;
             self.edges[id].clear();
@@ -315,21 +291,17 @@ where
     }
 
     pub fn port(&mut self, node: NodeRef, type_: PT, ident: P) -> Result<PortRef, Error> {
-        self.port_(node, type_, PortIdent::User(ident))
-    }
-
-    fn port_(&mut self, node: NodeRef, type_: PT, ident: PortIdent<P>) -> Result<PortRef, Error> {
         if node.0 < self.node_count() && !self.free_nodes.contains(&node) {
             if let Some(port) = self.free_ports.pop() {
                 self.ports[node.0].push(port);
-                self.port_data[port.0] = (node, type_);
+                self.port_data[port.0] = (node, type_, 0);
                 self.port_identifiers[port.0] = ident;
                 Ok(port)
             } else {
                 let port = PortRef(self.port_count());
 
                 self.ports[node.0].push(port);
-                self.port_data.push((node, type_));
+                self.port_data.push((node, type_, 0));
                 self.port_identifiers.push(ident);
 
                 Ok(port)
@@ -341,7 +313,7 @@ where
 
     pub fn delete_port(&mut self, p: PortRef) -> Result<(), Error> {
         self.port_check(p)?;
-        let (node, _) = self.port_data[p.0];
+        let (node, _, _) = self.port_data[p.0];
         for e in self.edges[node.0]
             .clone()
             .into_iter()
@@ -373,6 +345,12 @@ where
         self.port_check(src)?;
         self.port_check(dst)?;
 
+        let (src_node, src_type, _) = self.port_data[src.0];
+        let (dst_node, dst_type, _) = self.port_data[dst.0];
+        if src_type != dst_type {
+            return Err(Error::InvalidPortType);
+        }
+
         for edge in self.incoming(dst) {
             if edge.src_port == src {
                 // These two ports are already connected.
@@ -383,23 +361,7 @@ where
             }
         }
 
-        let (src_node, src_type) = self.port_data[src.0];
-        let (dst_node, dst_type) = self.port_data[dst.0];
-        if src_type != dst_type {
-            return Err(Error::InvalidPortType);
-        }
-
         self.cycle_check(src_node, dst_node)?;
-
-        self.connect_(src, dst)
-    }
-
-    fn connect_(&mut self, src: PortRef, dst: PortRef) -> Result<(), Error> {
-        let (src_node, src_type) = self.port_data[src.0];
-        let (dst_node, dst_type) = self.port_data[dst.0];
-        if src_type != dst_type {
-            return Err(Error::InvalidPortType);
-        }
 
         let edge = Edge {
             src_node,
@@ -422,14 +384,17 @@ where
 
         self.edges[src_node.0].push(edge);
         self.edges[dst_node.0].push(edge);
+
+        self.edge_delay_comps.insert(edge, 0);
+
         Ok(())
     }
 
     pub fn disconnect(&mut self, src: PortRef, dst: PortRef) -> Result<(), Error> {
         self.port_check(src)?;
         self.port_check(dst)?;
-        let (src_node, _) = self.port_data[src.0];
-        let (dst_node, _) = self.port_data[dst.0];
+        let (src_node, _, _) = self.port_data[src.0];
+        let (dst_node, _, _) = self.port_data[dst.0];
         let type_ = self.port_data[src.0].1;
         self.remove_edge(Edge {
             src_node,
@@ -446,25 +411,25 @@ where
         Ok(())
     }
 
-    pub fn port_ident(&self, port: PortRef) -> Result<&'_ PortIdent<P>, Error> {
+    pub fn port_ident(&self, port: PortRef) -> Result<&'_ P, Error> {
         self.port_check(port)?;
         Ok(&self.port_identifiers[port.0])
     }
 
-    pub fn node_ident(&self, node: NodeRef) -> Result<&'_ NodeIdent<N, PT>, Error> {
+    pub fn node_ident(&self, node: NodeRef) -> Result<&'_ N, Error> {
         self.node_check(node)?;
         Ok(&self.node_identifiers[node.0])
     }
 
     pub fn set_port_ident(&mut self, port: PortRef, ident: P) -> Result<(), Error> {
         self.port_check(port)?;
-        self.port_identifiers[port.0] = PortIdent::User(ident);
+        self.port_identifiers[port.0] = ident;
         Ok(())
     }
 
     pub fn set_node_ident(&mut self, node: NodeRef, ident: N) -> Result<(), Error> {
         self.node_check(node)?;
-        self.node_identifiers[node.0] = NodeIdent::User(ident);
+        self.node_identifiers[node.0] = ident;
         Ok(())
     }
 
@@ -540,6 +505,9 @@ where
             (Some(s), Some(d)) => {
                 self.edges[src_node.0].remove(s);
                 self.edges[dst_node.0].remove(d);
+
+                self.edge_delay_comps.remove(&edge).unwrap();
+
                 Ok(())
             }
             _ => Err(Error::ConnectionDoesNotExist),
@@ -556,6 +524,9 @@ where
 
     fn outgoing(&self, port: PortRef) -> impl Iterator<Item = Edge<PT>> + '_ {
         let node = self.port_data[port.0].0;
+
+        dbg!(&self.edges[node.0]);
+
         self.edges[node.0]
             .iter()
             .filter(move |e| e.src_port == port)
@@ -627,12 +598,20 @@ where
              node: NodeRef,
              heap_store: &mut HeapStore<N, P, PT>,
              latencies: &mut Vec<u64>,
-             deps: &mut Vec<NodeRef>,
-             edges: &mut Vec<Edge<PT>>,
-             insertions: &mut Vec<NodeRef>| {
-                *latencies = graph
-                    .dependencies(node)
-                    .map(|n| heap_store.all_latencies[n.0].unwrap() + graph.delays[n.0])
+             deps: &mut Vec<NodeRef>| {
+                *latencies = graph.edges[node.0]
+                    .iter()
+                    .filter_map(|e| {
+                        if e.dst_node == node {
+                            Some(
+                                heap_store.all_latencies[e.src_node.0].unwrap()
+                                    + graph.delays[e.src_node.0]
+                                    + graph.edge_delay_comps.get(e).unwrap(),
+                            )
+                        } else {
+                            None
+                        }
+                    })
                     .collect::<Vec<_>>();
 
                 *deps = graph.dependencies(node).collect();
@@ -641,40 +620,12 @@ where
 
                 heap_store.all_latencies[node.0] = max_latency;
 
-                insertions.clear();
-
                 for (dep, latency) in deps.iter().zip(latencies.iter()) {
-                    *edges = graph.edges[node.0]
-                        .iter()
-                        .filter(|e| e.src_node == *dep)
-                        .map(|e| *e)
-                        .collect();
-
-                    for edge in edges.iter() {
+                    for edge in graph.edges[node.0].iter().filter(|e| e.src_node == *dep) {
                         let compensation = max_latency.unwrap() - latency;
-                        if compensation == 0 {
-                            continue;
-                        }
-                        if let Some((node, delay)) = heap_store.delays.get_mut(edge) {
-                            *delay = compensation;
-                            graph.delays[node.0] = compensation;
-                        } else {
-                            graph.remove_edge(*edge).unwrap();
-
-                            let delay_node = graph.node_(NodeIdent::DelayComp(edge.type_));
-
-                            let delay_input = graph
-                                .port_(delay_node, edge.type_, PortIdent::DelayComp)
-                                .unwrap();
-                            let delay_output = graph
-                                .port_(delay_node, edge.type_, PortIdent::DelayComp)
-                                .unwrap();
-
-                            graph.connect_(edge.src_port, delay_input).unwrap();
-                            graph.connect_(delay_output, edge.dst_port).unwrap();
-                            graph.delays[delay_node.0] = compensation;
-                            heap_store.delays.insert(*edge, (delay_node, compensation));
-                            insertions.push(delay_node);
+                        if compensation != 0 {
+                            *graph.edge_delay_comps.get_mut(edge).unwrap() = compensation;
+                            graph.port_data[edge.dst_port.0].2 = compensation;
                         }
                     }
                 }
@@ -683,18 +634,21 @@ where
         let solve_buffer_requirements =
             |graph: &Graph<N, P, PT>, node: NodeRef, heap_store: &mut HeapStore<N, P, PT>| {
                 for port in &graph.ports[node.0] {
-                    let (_, type_) = graph.port_data[port.0];
+                    let (_, type_, _) = graph.port_data[port.0];
+
                     for output in graph.outgoing(*port) {
                         let (buffer, count) = heap_store
                             .output_assignments
                             .entry((node, *port))
                             .or_insert((heap_store.allocator.acquire(type_), 0));
                         *count += 1;
-                        heap_store
+                        if heap_store
                             .input_assignments
-                            .entry((output.dst_node, output.dst_port))
-                            .or_insert(vec![])
-                            .push(*buffer);
+                            .insert((output.dst_node, output.dst_port), *buffer)
+                            .is_some()
+                        {
+                            panic!("Two buffers assigned to the same input port");
+                        }
                     }
                     for input in graph.incoming(*port) {
                         let (buffer, count) = heap_store
@@ -717,7 +671,15 @@ where
 
         heap_store.all_latencies.clear();
         heap_store.all_latencies.resize(self.node_count(), None);
-        heap_store.delays.clear();
+
+        // TODO: We could possibly use this for some kind of caching optimization, but for
+        // now we just reset everything.
+        for (_, delay_comp) in self.edge_delay_comps.iter_mut() {
+            *delay_comp = 0;
+        }
+        for (_, _, delay_comp) in self.port_data.iter_mut() {
+            *delay_comp = 0;
+        }
 
         heap_store.allocator.clear();
 
@@ -727,25 +689,12 @@ where
         let mut scheduled_nodes = heap_store.scheduled_nodes.take().unwrap_or_default();
         scheduled_nodes.clear();
 
-        // This is arguably quite expensive, but the reason is that we don't want to add any delay
-        // compensation nodes to the user's graph (We only want to add them to the schedule).
-        // The fact that we're memory caching the previous graph should help some.
-        let mut delay_comp_graph =
-            if let Some(mut delay_comp_graph) = heap_store.delay_comp_graph.take() {
-                *delay_comp_graph = self.clone();
-                delay_comp_graph
-            } else {
-                Box::new(self.clone())
-            };
-
         let mut latencies = heap_store.latencies.take().unwrap_or_default();
         let mut deps = heap_store.deps.take().unwrap_or_default();
-        let mut edges = heap_store.edges.take().unwrap_or_default();
-        let mut insertions = heap_store.insertions.take().unwrap_or_default();
         let mut queue = heap_store.walk_queue.take().unwrap_or_default();
         let mut indegree = heap_store.walk_indegree.take().unwrap_or_default();
 
-        delay_comp_graph.walk_mut(
+        self.walk_mut(
             &mut heap_store,
             &mut queue,
             &mut indegree,
@@ -753,49 +702,37 @@ where
                 // Maybe use the log crate for this to avoid polluting the user's output?
                 // println!("compiling {}", graph.node_name(node).unwrap());
 
-                solve_latency_requirements(
-                    graph,
-                    node,
-                    heap_store,
-                    &mut latencies,
-                    &mut deps,
-                    &mut edges,
-                    &mut insertions,
-                );
-                for insertion in insertions.iter() {
-                    solve_buffer_requirements(graph, *insertion, heap_store);
-                    scheduled_nodes.push(*insertion);
-                }
+                solve_latency_requirements(graph, node, heap_store, &mut latencies, &mut deps);
                 solve_buffer_requirements(graph, node, heap_store);
                 scheduled_nodes.push(node);
             },
         );
 
         for node in scheduled_nodes.iter() {
-            let node_ident = delay_comp_graph.node_identifiers[node.0].clone();
+            let node_ident = self.node_identifiers[node.0].clone();
 
-            let inputs: Vec<(PortIdent<P>, Vec<Buffer<PT>>)> = delay_comp_graph.ports[node.0]
+            let inputs = self.ports[node.0]
                 .iter()
                 .filter_map(|port| {
                     heap_store
                         .input_assignments
                         .get(&(*node, *port))
-                        .map(|buffers| {
-                            (
-                                delay_comp_graph.port_identifiers[port.0].clone(),
-                                buffers.clone(),
-                            )
+                        .map(|buffer| ScheduledInput {
+                            port: self.port_identifiers[port.0].clone(),
+                            buffer: *buffer,
+                            delay_comp: self.port_data[port.0].2,
                         })
                 })
                 .collect::<Vec<_>>();
-            let outputs: Vec<(PortIdent<P>, Buffer<PT>)> = delay_comp_graph.ports[node.0]
+            let outputs = self.ports[node.0]
                 .iter()
                 .filter_map(|port| {
                     heap_store
                         .output_assignments
                         .get(&(*node, *port))
-                        .map(|(buffer, _)| {
-                            (delay_comp_graph.port_identifiers[port.0].clone(), *buffer)
+                        .map(|(buffer, _)| ScheduledOutput {
+                            port: self.port_identifiers[port.0].clone(),
+                            buffer: *buffer,
                         })
                 })
                 .collect::<Vec<_>>();
@@ -809,11 +746,8 @@ where
 
         heap_store.scheduled = Some(scheduled);
         heap_store.scheduled_nodes = Some(scheduled_nodes);
-        heap_store.delay_comp_graph = Some(delay_comp_graph);
         heap_store.latencies = Some(latencies);
         heap_store.deps = Some(deps);
-        heap_store.edges = Some(edges);
-        heap_store.insertions = Some(insertions);
         heap_store.walk_queue = Some(queue);
         heap_store.walk_indegree = Some(indegree);
 
@@ -901,7 +835,7 @@ mod tests {
                 .expect("could not create input"),
         );
         graph.set_delay(b, 2).expect("could not update delay of b");
-        graph.set_delay(c, 5).expect("coudl not update delay of c");
+        graph.set_delay(c, 5).expect("could not update delay of c");
         graph.connect(a_out, b_in).expect("could not connect");
         graph.connect(a_out, c_in).expect("could not connect");
         graph.connect(c_out, d_in).expect("could not connect");
@@ -918,17 +852,23 @@ mod tests {
         let mut last_node = None;
         for entry in graph.compile() {
             println!("process {:?}:", entry.node);
-            for (port, buffers) in entry.inputs.iter() {
-                println!("    {:?} => ", port);
-                for b in buffers {
-                    println!("        {}", b.index);
+            for in_entry in entry.inputs.iter() {
+                println!(
+                    "    {:?} => {}, delay comp: {}",
+                    in_entry.port, in_entry.buffer.index, in_entry.delay_comp
+                );
+
+                if in_entry.port == "input_2" {
+                    assert_eq!(in_entry.delay_comp, 3);
+                } else {
+                    assert_eq!(in_entry.delay_comp, 0);
                 }
             }
-            for (port, buf) in entry.outputs.iter() {
-                println!("    {:?} => {}", port, buf.index);
+            for out_entry in entry.outputs.iter() {
+                println!("    {:?} => {}", out_entry.port, out_entry.buffer.index);
             }
             last_node = Some(entry.node.clone());
         }
-        assert!(matches!(last_node, Some(NodeIdent::User("D"))));
+        assert!(matches!(last_node, Some("D")));
     }
 }
