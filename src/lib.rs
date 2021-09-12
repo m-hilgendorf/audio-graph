@@ -370,19 +370,6 @@ where
     }
 
     pub fn connect(&mut self, src: PortRef, dst: PortRef) -> Result<(), Error> {
-        // This won't panic because this is always `Some` on the user's end.
-        let mut mem_cache = self.mem_cache.take().unwrap();
-        let res = self.connect_(src, dst, &mut mem_cache);
-        self.mem_cache = Some(mem_cache);
-        res
-    }
-
-    fn connect_(
-        &mut self,
-        src: PortRef,
-        dst: PortRef,
-        mem_cache: &mut MemCache<N, P, PT>,
-    ) -> Result<(), Error> {
         self.port_check(src)?;
         self.port_check(dst)?;
 
@@ -402,11 +389,17 @@ where
             return Err(Error::InvalidPortType);
         }
 
-        let mut queue = mem_cache.walk_queue.take().unwrap_or_default();
-        let mut queued = mem_cache.cycle_queued.take().unwrap_or_default();
-        self.cycle_check(src_node, dst_node, &mut queue, &mut queued)?;
-        mem_cache.walk_queue = Some(queue);
-        mem_cache.cycle_queued = Some(queued);
+        self.cycle_check(src_node, dst_node)?;
+
+        self.connect_(src, dst)
+    }
+
+    fn connect_(&mut self, src: PortRef, dst: PortRef) -> Result<(), Error> {
+        let (src_node, src_type) = self.port_data[src.0];
+        let (dst_node, dst_type) = self.port_data[dst.0];
+        if src_type != dst_type {
+            return Err(Error::InvalidPortType);
+        }
 
         let edge = Edge {
             src_node,
@@ -503,13 +496,12 @@ where
     /// before each edge addition.
     ///
     /// TODO: Optimize for adding multiple edges at once. (pass over the whole graph)
-    fn cycle_check(
-        &self,
-        src: NodeRef,
-        dst: NodeRef,
-        queue: &mut VecDeque<NodeRef>,
-        queued: &mut FnvHashSet<NodeRef>,
-    ) -> Result<(), Error> {
+    fn cycle_check(&mut self, src: NodeRef, dst: NodeRef) -> Result<(), Error> {
+        // This won't panic because this is always `Some` on the user's end.
+        let mut mem_cache = self.mem_cache.take().unwrap();
+        let mut queue = mem_cache.walk_queue.take().unwrap();
+        let mut queued = mem_cache.cycle_queued.take().unwrap();
+
         queue.clear();
         queued.clear();
         queue.push_back(dst);
@@ -517,6 +509,10 @@ where
 
         while let Some(node) = queue.pop_front() {
             if node == src {
+                mem_cache.walk_queue = Some(queue);
+                mem_cache.cycle_queued = Some(queued);
+                self.mem_cache = Some(mem_cache);
+
                 return Err(Error::Cycle);
             }
             for dependent in self.dependents(node) {
@@ -526,6 +522,11 @@ where
                 }
             }
         }
+
+        mem_cache.walk_queue = Some(queue);
+        mem_cache.cycle_queued = Some(queued);
+        self.mem_cache = Some(mem_cache);
+
         Ok(())
     }
 
@@ -669,12 +670,8 @@ where
                                 .port_(delay_node, edge.type_, PortIdent::DelayComp)
                                 .unwrap();
 
-                            graph
-                                .connect_(edge.src_port, delay_input, mem_cache)
-                                .unwrap();
-                            graph
-                                .connect_(delay_output, edge.dst_port, mem_cache)
-                                .unwrap();
+                            graph.connect_(edge.src_port, delay_input).unwrap();
+                            graph.connect_(delay_output, edge.dst_port).unwrap();
                             graph.delays[delay_node.0] = compensation;
                             mem_cache.delays.insert(*edge, (delay_node, compensation));
                             insertions.push(delay_node);
