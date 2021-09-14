@@ -15,7 +15,6 @@ pub enum Error {
     ConnectionDoesNotExist,
     RefDoesNotExist,
     InvalidPortType,
-    DstPortAlreadyConnected,
 }
 
 impl std::error::Error for Error {}
@@ -27,9 +26,11 @@ impl std::fmt::Display for Error {
             Error::PortDoesNotExist => write!(f, "Audio graph port does not exist"),
             Error::Cycle => write!(f, "Audio graph cycle detected"),
             Error::ConnectionDoesNotExist => write!(f, "Audio graph connection does not exist"),
-            Error::RefDoesNotExist=> write!(f, "Audio graph reference does not exist"),
-            Error::InvalidPortType => write!(f, "Cannot connect audio graph ports. Ports are a different type"),
-            Error::DstPortAlreadyConnected => write!(f, "Cannot connect audio graph ports. The destination port is already connected to another port"),
+            Error::RefDoesNotExist => write!(f, "Audio graph reference does not exist"),
+            Error::InvalidPortType => write!(
+                f,
+                "Cannot connect audio graph ports. Ports are a different type"
+            ),
         }
     }
 }
@@ -57,7 +58,7 @@ impl Borrow<usize> for PortRef {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct Edge<PT: PortType + PartialEq> {
+struct Edge<PT: Debug + Clone + PortType + PartialEq> {
     src_node: NodeRef,
     src_port: PortRef,
     dst_node: NodeRef,
@@ -65,7 +66,7 @@ struct Edge<PT: PortType + PartialEq> {
     type_: PT,
 }
 
-struct BufferAllocator<PT: PortType + PartialEq> {
+struct BufferAllocator<PT: Debug + Clone + PortType + PartialEq> {
     buffer_count_stacks: Vec<(usize, Vec<usize>)>,
     _phantom_port_type: PhantomData<PT>,
 }
@@ -122,13 +123,13 @@ pub struct Graph<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: PortType + PartialEq,
+    PT: Debug + Clone + PortType + PartialEq,
 {
     edges: Vec<Vec<Edge<PT>>>,
     edge_delay_comps: FnvHashMap<Edge<PT>, u64>,
     ports: Vec<Vec<PortRef>>,
     delays: Vec<u64>,
-    port_data: Vec<(NodeRef, PT, u64)>,
+    port_data: Vec<(NodeRef, PT)>,
     port_identifiers: Vec<P>,
     node_identifiers: Vec<N>,
     free_nodes: Vec<NodeRef>,
@@ -141,7 +142,7 @@ impl<N, P, PT> Default for Graph<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: PortType + PartialEq,
+    PT: Debug + Clone + PortType + PartialEq,
 {
     fn default() -> Self {
         Self {
@@ -160,12 +161,12 @@ where
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct Buffer<PT: PortType + PartialEq> {
+pub struct Buffer<PT: Debug + Clone + PortType + PartialEq> {
     index: usize,
     type_: PT,
 }
 
-impl<PT: PortType + PartialEq> BufferAllocator<PT> {
+impl<PT: Debug + Clone + PortType + PartialEq> BufferAllocator<PT> {
     fn acquire(&mut self, type_: PT) -> Buffer<PT> {
         let type_index = type_.into_index();
         let (count, stack) = &mut self.buffer_count_stacks[type_index];
@@ -193,7 +194,7 @@ pub struct HeapStore<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: PortType + PartialEq,
+    PT: Debug + Clone + PortType + PartialEq,
 {
     walk_queue: Option<VecDeque<NodeRef>>,
     walk_indegree: Option<FnvHashMap<NodeRef, usize>>,
@@ -203,7 +204,7 @@ where
     all_latencies: Vec<Option<u64>>,
     deps: Option<Vec<NodeRef>>,
     allocator: BufferAllocator<PT>,
-    input_assignments: FnvHashMap<(NodeRef, PortRef), Buffer<PT>>,
+    input_assignments: FnvHashMap<(NodeRef, PortRef), Vec<(Buffer<PT>, Edge<PT>)>>,
     output_assignments: FnvHashMap<(NodeRef, PortRef), (Buffer<PT>, usize)>,
     scheduled_nodes: Option<Vec<NodeRef>>,
 
@@ -214,7 +215,7 @@ impl<N, P, PT> Default for HeapStore<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: PortType + PartialEq,
+    PT: Debug + Clone + PortType + PartialEq,
 {
     fn default() -> Self {
         Self {
@@ -234,43 +235,22 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct ScheduledInput<P, PT>
-where
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
-{
-    port: P,
-    buffer: Buffer<PT>,
-    delay_comp: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct ScheduledOutput<P, PT>
-where
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
-{
-    port: P,
-    buffer: Buffer<PT>,
-}
-
-#[derive(Clone, Debug)]
 pub struct Scheduled<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: PortType + PartialEq,
+    PT: Debug + Clone + PortType + PartialEq,
 {
     pub node: N,
-    pub inputs: Vec<ScheduledInput<P, PT>>,
-    pub outputs: Vec<ScheduledOutput<P, PT>>,
+    pub inputs: Vec<(P, Vec<(Buffer<PT>, u64)>)>,
+    pub outputs: Vec<(P, Buffer<PT>)>,
 }
 
 impl<N, P, PT> Graph<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: PortType + PartialEq,
+    PT: Debug + Clone + PortType + PartialEq,
 {
     pub fn node(&mut self, ident: N) -> NodeRef {
         if let Some(node) = self.free_nodes.pop() {
@@ -294,14 +274,14 @@ where
         if node.0 < self.node_count() && !self.free_nodes.contains(&node) {
             if let Some(port) = self.free_ports.pop() {
                 self.ports[node.0].push(port);
-                self.port_data[port.0] = (node, type_, 0);
+                self.port_data[port.0] = (node, type_);
                 self.port_identifiers[port.0] = ident;
                 Ok(port)
             } else {
                 let port = PortRef(self.port_count());
 
                 self.ports[node.0].push(port);
-                self.port_data.push((node, type_, 0));
+                self.port_data.push((node, type_));
                 self.port_identifiers.push(ident);
 
                 Ok(port)
@@ -313,7 +293,7 @@ where
 
     pub fn delete_port(&mut self, p: PortRef) -> Result<(), Error> {
         self.port_check(p)?;
-        let (node, _, _) = self.port_data[p.0];
+        let (node, _) = self.port_data[p.0];
         for e in self.edges[node.0]
             .clone()
             .into_iter()
@@ -345,8 +325,8 @@ where
         self.port_check(src)?;
         self.port_check(dst)?;
 
-        let (src_node, src_type, _) = self.port_data[src.0];
-        let (dst_node, dst_type, _) = self.port_data[dst.0];
+        let (src_node, src_type) = self.port_data[src.0];
+        let (dst_node, dst_type) = self.port_data[dst.0];
         if src_type != dst_type {
             return Err(Error::InvalidPortType);
         }
@@ -355,9 +335,6 @@ where
             if edge.src_port == src {
                 // These two ports are already connected.
                 return Ok(());
-            } else {
-                // Multiple sources cannot merge into the same destination port.
-                return Err(Error::DstPortAlreadyConnected);
             }
         }
 
@@ -371,7 +348,7 @@ where
             type_: src_type,
         };
 
-        /* Maybe use the log crate for this to avoid polluting the user's output?
+        /* TODO: Maybe use the log crate for this to avoid polluting the user's output?
         println!(
             "connection {}.{} to {}.{} with edge: {:?}",
             self.node_name(src_node).unwrap(),
@@ -393,8 +370,8 @@ where
     pub fn disconnect(&mut self, src: PortRef, dst: PortRef) -> Result<(), Error> {
         self.port_check(src)?;
         self.port_check(dst)?;
-        let (src_node, _, _) = self.port_data[src.0];
-        let (dst_node, _, _) = self.port_data[dst.0];
+        let (src_node, _) = self.port_data[src.0];
+        let (dst_node, _) = self.port_data[dst.0];
         let type_ = self.port_data[src.0].1;
         self.remove_edge(Edge {
             src_node,
@@ -525,8 +502,6 @@ where
     fn outgoing(&self, port: PortRef) -> impl Iterator<Item = Edge<PT>> + '_ {
         let node = self.port_data[port.0].0;
 
-        dbg!(&self.edges[node.0]);
-
         self.edges[node.0]
             .iter()
             .filter(move |e| e.src_port == port)
@@ -625,7 +600,6 @@ where
                         let compensation = max_latency.unwrap() - latency;
                         if compensation != 0 {
                             *graph.edge_delay_comps.get_mut(edge).unwrap() = compensation;
-                            graph.port_data[edge.dst_port.0].2 = compensation;
                         }
                     }
                 }
@@ -634,7 +608,7 @@ where
         let solve_buffer_requirements =
             |graph: &Graph<N, P, PT>, node: NodeRef, heap_store: &mut HeapStore<N, P, PT>| {
                 for port in &graph.ports[node.0] {
-                    let (_, type_, _) = graph.port_data[port.0];
+                    let (_, type_) = graph.port_data[port.0];
 
                     for output in graph.outgoing(*port) {
                         let (buffer, count) = heap_store
@@ -642,13 +616,11 @@ where
                             .entry((node, *port))
                             .or_insert((heap_store.allocator.acquire(type_), 0));
                         *count += 1;
-                        if heap_store
+                        heap_store
                             .input_assignments
-                            .insert((output.dst_node, output.dst_port), *buffer)
-                            .is_some()
-                        {
-                            panic!("Two buffers assigned to the same input port");
-                        }
+                            .entry((output.dst_node, output.dst_port))
+                            .or_insert(vec![])
+                            .push((*buffer, output));
                     }
                     for input in graph.incoming(*port) {
                         let (buffer, count) = heap_store
@@ -677,9 +649,6 @@ where
         for (_, delay_comp) in self.edge_delay_comps.iter_mut() {
             *delay_comp = 0;
         }
-        for (_, _, delay_comp) in self.port_data.iter_mut() {
-            *delay_comp = 0;
-        }
 
         heap_store.allocator.clear();
 
@@ -699,7 +668,7 @@ where
             &mut queue,
             &mut indegree,
             |graph, node, heap_store| {
-                // Maybe use the log crate for this to avoid polluting the user's output?
+                // TODO: Maybe use the log crate for this to avoid polluting the user's output?
                 // println!("compiling {}", graph.node_name(node).unwrap());
 
                 solve_latency_requirements(graph, node, heap_store, &mut latencies, &mut deps);
@@ -717,10 +686,16 @@ where
                     heap_store
                         .input_assignments
                         .get(&(*node, *port))
-                        .map(|buffer| ScheduledInput {
-                            port: self.port_identifiers[port.0].clone(),
-                            buffer: *buffer,
-                            delay_comp: self.port_data[port.0].2,
+                        .map(|buffers| {
+                            let buffers = buffers
+                                .iter()
+                                .map(|(buffer, edge)| {
+                                    let delay_comp = self.edge_delay_comps.get(edge).unwrap();
+                                    (*buffer, *delay_comp)
+                                })
+                                .collect();
+
+                            (self.port_identifiers[port.0].clone(), buffers)
                         })
                 })
                 .collect::<Vec<_>>();
@@ -730,10 +705,7 @@ where
                     heap_store
                         .output_assignments
                         .get(&(*node, *port))
-                        .map(|(buffer, _)| ScheduledOutput {
-                            port: self.port_identifiers[port.0].clone(),
-                            buffer: *buffer,
-                        })
+                        .map(|(buffer, _)| (self.port_identifiers[port.0].clone(), *buffer))
                 })
                 .collect::<Vec<_>>();
 
@@ -828,22 +800,19 @@ mod tests {
                 .port(c, DefaultPortType::Audio, "input")
                 .expect("could not create input"),
             graph
-                .port(d, DefaultPortType::Audio, "input")
+                .port(d, DefaultPortType::Audio, "d_input_1")
                 .expect("could not create input"),
             graph
-                .port(d, DefaultPortType::Audio, "input_2")
+                .port(d, DefaultPortType::Audio, "d_input_2")
                 .expect("could not create input"),
         );
         graph.set_delay(b, 2).expect("could not update delay of b");
         graph.set_delay(c, 5).expect("could not update delay of c");
         graph.connect(a_out, b_in).expect("could not connect");
         graph.connect(a_out, c_in).expect("could not connect");
+        graph.connect(b_out, d_in).expect("could not connect");
         graph.connect(c_out, d_in).expect("could not connect");
         graph.connect(b_out, d_in_2).expect("could not connect");
-
-        graph
-            .connect(b_out, d_in)
-            .expect_err("Desination ports should not be able to have multiple source ports.");
 
         graph
             .connect(b_out, a_in)
@@ -852,20 +821,36 @@ mod tests {
         let mut last_node = None;
         for entry in graph.compile() {
             println!("process {:?}:", entry.node);
-            for in_entry in entry.inputs.iter() {
-                println!(
-                    "    {:?} => {}, delay comp: {}",
-                    in_entry.port, in_entry.buffer.index, in_entry.delay_comp
-                );
+            for (port, buffers) in entry.inputs.iter() {
+                println!("    {} => ", port);
 
-                if in_entry.port == "input_2" {
-                    assert_eq!(in_entry.delay_comp, 3);
+                if *port == "d_input_1" {
+                    for (b, delay_comp) in buffers {
+                        println!("        index: {}", b.index);
+                        println!("        delay_comp: {}", delay_comp);
+                    }
+
+                    // One of the buffers should have a delay_comp of 0, and one
+                    // should have a delay_comp of 3
+                    assert!(
+                        (buffers[0].1 == 0 && buffers[1].1 == 3)
+                            || (buffers[0].1 == 3 && buffers[1].1 == 0)
+                    )
                 } else {
-                    assert_eq!(in_entry.delay_comp, 0);
+                    for (b, delay_comp) in buffers {
+                        println!("        index: {}", b.index);
+                        println!("        delay_comp: {}", delay_comp);
+
+                        if *port == "d_input_2" {
+                            assert_eq!(*delay_comp, 3);
+                        } else {
+                            assert_eq!(*delay_comp, 0);
+                        }
+                    }
                 }
             }
-            for out_entry in entry.outputs.iter() {
-                println!("    {:?} => {}", out_entry.port, out_entry.buffer.index);
+            for (port, buffer) in entry.outputs.iter() {
+                println!("    {:?} => {}", port, buffer.index);
             }
             last_node = Some(entry.node.clone());
         }
