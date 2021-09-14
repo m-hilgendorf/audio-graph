@@ -58,7 +58,7 @@ impl Borrow<usize> for PortRef {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct Edge<PT: Debug + Clone + PortType + PartialEq> {
+struct Edge<PT: PortType + PartialEq> {
     src_node: NodeRef,
     src_port: PortRef,
     dst_node: NodeRef,
@@ -66,7 +66,7 @@ struct Edge<PT: Debug + Clone + PortType + PartialEq> {
     type_: PT,
 }
 
-struct BufferAllocator<PT: Debug + Clone + PortType + PartialEq> {
+struct BufferAllocator<PT: PortType + PartialEq> {
     buffer_count_stacks: Vec<(usize, Vec<usize>)>,
     _phantom_port_type: PhantomData<PT>,
 }
@@ -123,7 +123,7 @@ pub struct Graph<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: Debug + Clone + PortType + PartialEq,
+    PT: PortType + PartialEq,
 {
     edges: Vec<Vec<Edge<PT>>>,
     edge_delay_comps: FnvHashMap<Edge<PT>, u64>,
@@ -142,7 +142,7 @@ impl<N, P, PT> Default for Graph<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: Debug + Clone + PortType + PartialEq,
+    PT: PortType + PartialEq,
 {
     fn default() -> Self {
         Self {
@@ -161,12 +161,12 @@ where
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct Buffer<PT: Debug + Clone + PortType + PartialEq> {
+pub struct Buffer<PT: PortType + PartialEq> {
     index: usize,
     type_: PT,
 }
 
-impl<PT: Debug + Clone + PortType + PartialEq> BufferAllocator<PT> {
+impl<PT: PortType + PartialEq> BufferAllocator<PT> {
     fn acquire(&mut self, type_: PT) -> Buffer<PT> {
         let type_index = type_.into_index();
         let (count, stack) = &mut self.buffer_count_stacks[type_index];
@@ -194,7 +194,7 @@ pub struct HeapStore<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: Debug + Clone + PortType + PartialEq,
+    PT: PortType + PartialEq,
 {
     walk_queue: Option<VecDeque<NodeRef>>,
     walk_indegree: Option<FnvHashMap<NodeRef, usize>>,
@@ -215,7 +215,7 @@ impl<N, P, PT> Default for HeapStore<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: Debug + Clone + PortType + PartialEq,
+    PT: PortType + PartialEq,
 {
     fn default() -> Self {
         Self {
@@ -239,7 +239,7 @@ pub struct Scheduled<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: Debug + Clone + PortType + PartialEq,
+    PT: PortType + PartialEq,
 {
     pub node: N,
     pub inputs: Vec<(P, Vec<(Buffer<PT>, u64)>)>,
@@ -250,7 +250,7 @@ impl<N, P, PT> Graph<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: Debug + Clone + PortType + PartialEq,
+    PT: PortType + PartialEq,
 {
     pub fn node(&mut self, ident: N) -> NodeRef {
         if let Some(node) = self.free_nodes.pop() {
