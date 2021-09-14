@@ -7,7 +7,7 @@ Work in progress audio graph implementation
 - The graph uses an intermediate representation of nodes in a directed graph
 - Buffers are abstract identified by indices
 - The graph is "compiled" into a schedule, containing buffer allocations and process order
-- Delay compensation is added to each necessary input buffer inside the schedule
+- Delay compensation is automatically added to each needed input buffer inside the schedule
 - The graph supports one-to-many and many-to-one connections
 - The graph has built-in safeguards like cycle detection
 - Multi-threaded schedules can be produced using any given number of threads
