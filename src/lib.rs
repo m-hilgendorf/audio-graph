@@ -7,34 +7,6 @@ use std::{borrow::Borrow, collections::VecDeque};
 
 type Vec<T> = SmallVec<[T; 16]>;
 
-#[derive(Debug, Clone, Copy)]
-pub enum Error {
-    NodeDoesNotExist,
-    PortDoesNotExist,
-    Cycle,
-    ConnectionDoesNotExist,
-    RefDoesNotExist,
-    InvalidPortType,
-}
-
-impl std::error::Error for Error {}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::NodeDoesNotExist => write!(f, "Audio graph node does not exist"),
-            Error::PortDoesNotExist => write!(f, "Audio graph port does not exist"),
-            Error::Cycle => write!(f, "Audio graph cycle detected"),
-            Error::ConnectionDoesNotExist => write!(f, "Audio graph connection does not exist"),
-            Error::RefDoesNotExist => write!(f, "Audio graph reference does not exist"),
-            Error::InvalidPortType => write!(
-                f,
-                "Cannot connect audio graph ports. Ports are a different type"
-            ),
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct NodeRef(usize);
 
@@ -44,53 +16,18 @@ impl From<NodeRef> for usize {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub struct PortRef(usize);
 impl Borrow<usize> for NodeRef {
     fn borrow(&self) -> &'_ usize {
         &self.0
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct PortRef(usize);
+
 impl Borrow<usize> for PortRef {
     fn borrow(&self) -> &'_ usize {
         &self.0
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct Edge<PT: PortType + PartialEq> {
-    src_node: NodeRef,
-    src_port: PortRef,
-    dst_node: NodeRef,
-    dst_port: PortRef,
-    type_: PT,
-}
-
-struct BufferAllocator<PT: PortType + PartialEq> {
-    buffer_count_stacks: Vec<(usize, Vec<usize>)>,
-    _phantom_port_type: PhantomData<PT>,
-}
-
-impl<PT: PortType> BufferAllocator<PT> {
-    fn clear(&mut self) {
-        for (c, s) in self.buffer_count_stacks.iter_mut() {
-            *c = 0;
-            s.clear();
-        }
-    }
-}
-
-impl<PT: PortType> Default for BufferAllocator<PT> {
-    fn default() -> Self {
-        let num_types = PT::num_types();
-        let mut buffer_count_stacks = Vec::<(usize, Vec<usize>)>::new();
-        for _ in 0..num_types {
-            buffer_count_stacks.push((0, Vec::new()));
-        }
-        Self {
-            buffer_count_stacks,
-            _phantom_port_type: PhantomData::default(),
-        }
     }
 }
 
@@ -119,54 +56,38 @@ impl PortType for DefaultPortType {
     }
 }
 
-pub struct Graph<N, P, PT>
-where
-    N: Debug + Clone,
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
-{
-    edges: Vec<Vec<Edge<PT>>>,
-    edge_delay_comps: FnvHashMap<Edge<PT>, u64>,
-    ports: Vec<Vec<PortRef>>,
-    delays: Vec<u64>,
-    port_data: Vec<(NodeRef, PT)>,
-    port_identifiers: Vec<P>,
-    node_identifiers: Vec<N>,
-    free_nodes: Vec<NodeRef>,
-    free_ports: Vec<PortRef>,
-
-    heap_store: Option<HeapStore<N, P, PT>>,
-}
-
-impl<N, P, PT> Default for Graph<N, P, PT>
-where
-    N: Debug + Clone,
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
-{
-    fn default() -> Self {
-        Self {
-            edges: Vec::new(),
-            edge_delay_comps: FnvHashMap::default(),
-            ports: Vec::new(),
-            delays: Vec::new(),
-            port_data: Vec::new(),
-            port_identifiers: Vec::new(),
-            node_identifiers: Vec::new(),
-            free_nodes: Vec::new(),
-            free_ports: Vec::new(),
-            heap_store: Some(HeapStore::default()),
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct Buffer<PT: PortType + PartialEq> {
-    index: usize,
+#[derive(Clone, Copy, Debug)]
+struct Edge<PT: PortType + PartialEq> {
+    src_node: NodeRef,
+    src_port: PortRef,
+    dst_node: NodeRef,
+    dst_port: PortRef,
     type_: PT,
 }
 
+impl<PT: PortType + PartialEq> PartialEq for Edge<PT> {
+    fn eq(&self, other: &Edge<PT>) -> bool {
+        // For our purposes, comparing just src_port and dst_port is sufficient.
+        // Ports can only be of one type, and they can only belong to one node.
+        // Deleting ports should garauntee that all corresponding edges are also
+        // deleted, so reusing ports should not cause a problem.
+        self.src_port == other.src_port && self.dst_port == other.dst_port
+    }
+}
+
+struct BufferAllocator<PT: PortType + PartialEq> {
+    buffer_count_stacks: Vec<(usize, Vec<usize>)>,
+    _phantom_port_type: PhantomData<PT>,
+}
+
 impl<PT: PortType + PartialEq> BufferAllocator<PT> {
+    fn clear(&mut self) {
+        for (c, s) in self.buffer_count_stacks.iter_mut() {
+            *c = 0;
+            s.clear();
+        }
+    }
+
     fn acquire(&mut self, type_: PT) -> Buffer<PT> {
         let type_index = type_.into_index();
         let (count, stack) = &mut self.buffer_count_stacks[type_index];
@@ -190,6 +111,38 @@ impl<PT: PortType + PartialEq> BufferAllocator<PT> {
     }
 }
 
+impl<PT: PortType> Default for BufferAllocator<PT> {
+    fn default() -> Self {
+        let num_types = PT::num_types();
+        let mut buffer_count_stacks = Vec::<(usize, Vec<usize>)>::new();
+        for _ in 0..num_types {
+            buffer_count_stacks.push((0, Vec::new()));
+        }
+        Self {
+            buffer_count_stacks,
+            _phantom_port_type: PhantomData::default(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Buffer<PT: PortType + PartialEq> {
+    index: usize,
+    type_: PT,
+}
+
+#[derive(Clone, Debug)]
+pub struct Scheduled<N, P, PT>
+where
+    N: Debug + Clone,
+    P: Debug + Clone,
+    PT: PortType + PartialEq,
+{
+    pub node: N,
+    pub inputs: Vec<(P, Vec<(Buffer<PT>, u64)>)>,
+    pub outputs: Vec<(P, Buffer<PT>)>,
+}
+
 pub struct HeapStore<N, P, PT>
 where
     N: Debug + Clone,
@@ -200,11 +153,12 @@ where
     walk_indegree: Option<FnvHashMap<NodeRef, usize>>,
     cycle_queued: Option<FnvHashSet<NodeRef>>,
 
-    latencies: Option<Vec<u64>>,
+    latencies: Vec<u64>,
     all_latencies: Vec<Option<u64>>,
-    deps: Option<Vec<NodeRef>>,
+    deps: Vec<NodeRef>,
     allocator: BufferAllocator<PT>,
-    input_assignments: FnvHashMap<(NodeRef, PortRef), Vec<(Buffer<PT>, Edge<PT>)>>,
+    delay_comps: Option<FnvHashMap<(PortRef, PortRef), u64>>,
+    input_assignments: FnvHashMap<(NodeRef, PortRef), Vec<(Buffer<PT>, (PortRef, PortRef))>>,
     output_assignments: FnvHashMap<(NodeRef, PortRef), (Buffer<PT>, usize)>,
     scheduled_nodes: Option<Vec<NodeRef>>,
 
@@ -222,10 +176,11 @@ where
             walk_queue: Some(VecDeque::new()),
             walk_indegree: Some(FnvHashMap::default()),
             cycle_queued: Some(FnvHashSet::default()),
-            latencies: Some(Vec::new()),
+            latencies: Vec::new(),
             all_latencies: Vec::new(),
-            deps: Some(Vec::new()),
+            deps: Vec::new(),
             allocator: BufferAllocator::default(),
+            delay_comps: Some(FnvHashMap::default()),
             input_assignments: FnvHashMap::default(),
             output_assignments: FnvHashMap::default(),
             scheduled_nodes: Some(Vec::new()),
@@ -234,16 +189,44 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Scheduled<N, P, PT>
+pub struct Graph<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
     PT: PortType + PartialEq,
 {
-    pub node: N,
-    pub inputs: Vec<(P, Vec<(Buffer<PT>, u64)>)>,
-    pub outputs: Vec<(P, Buffer<PT>)>,
+    edges: Vec<Vec<Edge<PT>>>,
+    ports: Vec<Vec<PortRef>>,
+    delays: Vec<u64>,
+    port_data: Vec<(NodeRef, PT)>,
+
+    port_identifiers: Vec<P>,
+    node_identifiers: Vec<N>,
+    free_nodes: Vec<NodeRef>,
+    free_ports: Vec<PortRef>,
+
+    heap_store: Option<HeapStore<N, P, PT>>,
+}
+
+impl<N, P, PT> Default for Graph<N, P, PT>
+where
+    N: Debug + Clone,
+    P: Debug + Clone,
+    PT: PortType + PartialEq,
+{
+    fn default() -> Self {
+        Self {
+            edges: Vec::new(),
+            ports: Vec::new(),
+            delays: Vec::new(),
+            port_data: Vec::new(),
+            port_identifiers: Vec::new(),
+            node_identifiers: Vec::new(),
+            free_nodes: Vec::new(),
+            free_ports: Vec::new(),
+            heap_store: Some(HeapStore::default()),
+        }
+    }
 }
 
 impl<N, P, PT> Graph<N, P, PT>
@@ -361,8 +344,6 @@ where
 
         self.edges[src_node.0].push(edge);
         self.edges[dst_node.0].push(edge);
-
-        self.edge_delay_comps.insert(edge, 0);
 
         Ok(())
     }
@@ -483,8 +464,6 @@ where
                 self.edges[src_node.0].remove(s);
                 self.edges[dst_node.0].remove(d);
 
-                self.edge_delay_comps.remove(&edge).unwrap();
-
                 Ok(())
             }
             _ => Err(Error::ConnectionDoesNotExist),
@@ -572,34 +551,28 @@ where
             |graph: &mut Graph<N, P, PT>,
              node: NodeRef,
              heap_store: &mut HeapStore<N, P, PT>,
-             latencies: &mut Vec<u64>,
-             deps: &mut Vec<NodeRef>| {
-                *latencies = graph.edges[node.0]
-                    .iter()
-                    .filter_map(|e| {
-                        if e.dst_node == node {
-                            Some(
-                                heap_store.all_latencies[e.src_node.0].unwrap()
-                                    + graph.delays[e.src_node.0]
-                                    + graph.edge_delay_comps.get(e).unwrap(),
-                            )
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
+             delay_comps: &mut FnvHashMap<(PortRef, PortRef), u64>| {
+                heap_store.deps.clear();
+                heap_store.latencies.clear();
+                for edge in graph.edges[node.0].iter().filter(|e| e.dst_node == node) {
+                    heap_store.deps.push(edge.src_node);
 
-                *deps = graph.dependencies(node).collect();
+                    heap_store.latencies.push(
+                        heap_store.all_latencies[edge.src_node.0].unwrap()
+                            + graph.delays[edge.src_node.0],
+                    );
+                }
 
-                let max_latency = latencies.iter().max().copied().or(Some(0));
+                let max_latency = heap_store.latencies.iter().max().copied().or(Some(0));
 
                 heap_store.all_latencies[node.0] = max_latency;
 
-                for (dep, latency) in deps.iter().zip(latencies.iter()) {
-                    for edge in graph.edges[node.0].iter().filter(|e| e.src_node == *dep) {
-                        let compensation = max_latency.unwrap() - latency;
-                        if compensation != 0 {
-                            *graph.edge_delay_comps.get_mut(edge).unwrap() = compensation;
+                for (dep, latency) in heap_store.deps.iter().zip(heap_store.latencies.iter()) {
+                    let compensation = max_latency.unwrap() - latency;
+                    if compensation != 0 {
+                        for edge in graph.edges[node.0].iter().filter(|e| e.src_node == *dep) {
+                            let _ =
+                                delay_comps.insert((edge.src_port, edge.dst_port), compensation);
                         }
                     }
                 }
@@ -620,7 +593,7 @@ where
                             .input_assignments
                             .entry((output.dst_node, output.dst_port))
                             .or_insert(vec![])
-                            .push((*buffer, output));
+                            .push((*buffer, (output.src_port, output.dst_port)));
                     }
                     for input in graph.incoming(*port) {
                         let (buffer, count) = heap_store
@@ -644,24 +617,18 @@ where
         heap_store.all_latencies.clear();
         heap_store.all_latencies.resize(self.node_count(), None);
 
-        // TODO: We could possibly use this for some kind of caching optimization, but for
-        // now we just reset everything.
-        for (_, delay_comp) in self.edge_delay_comps.iter_mut() {
-            *delay_comp = 0;
-        }
+        let mut delay_comps = heap_store.delay_comps.take().unwrap();
+        delay_comps.clear();
 
         heap_store.allocator.clear();
-
         heap_store.input_assignments.clear();
         heap_store.output_assignments.clear();
 
-        let mut scheduled_nodes = heap_store.scheduled_nodes.take().unwrap_or_default();
+        let mut scheduled_nodes = heap_store.scheduled_nodes.take().unwrap();
         scheduled_nodes.clear();
 
-        let mut latencies = heap_store.latencies.take().unwrap_or_default();
-        let mut deps = heap_store.deps.take().unwrap_or_default();
-        let mut queue = heap_store.walk_queue.take().unwrap_or_default();
-        let mut indegree = heap_store.walk_indegree.take().unwrap_or_default();
+        let mut queue = heap_store.walk_queue.take().unwrap();
+        let mut indegree = heap_store.walk_indegree.take().unwrap();
 
         self.walk_mut(
             &mut heap_store,
@@ -671,7 +638,7 @@ where
                 // TODO: Maybe use the log crate for this to avoid polluting the user's output?
                 // println!("compiling {}", graph.node_name(node).unwrap());
 
-                solve_latency_requirements(graph, node, heap_store, &mut latencies, &mut deps);
+                solve_latency_requirements(graph, node, heap_store, &mut delay_comps);
                 solve_buffer_requirements(graph, node, heap_store);
                 scheduled_nodes.push(node);
             },
@@ -689,9 +656,10 @@ where
                         .map(|buffers| {
                             let buffers = buffers
                                 .iter()
-                                .map(|(buffer, edge)| {
-                                    let delay_comp = self.edge_delay_comps.get(edge).unwrap();
-                                    (*buffer, *delay_comp)
+                                .map(|(buffer, ports)| {
+                                    let delay_comp = delay_comps.get(ports).copied().unwrap_or(0);
+
+                                    (*buffer, delay_comp)
                                 })
                                 .collect();
 
@@ -717,9 +685,8 @@ where
         }
 
         heap_store.scheduled = Some(scheduled);
+        heap_store.delay_comps = Some(delay_comps);
         heap_store.scheduled_nodes = Some(scheduled_nodes);
-        heap_store.latencies = Some(latencies);
-        heap_store.deps = Some(deps);
         heap_store.walk_queue = Some(queue);
         heap_store.walk_indegree = Some(indegree);
 
@@ -731,6 +698,34 @@ where
             .scheduled
             .as_ref()
             .unwrap()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Error {
+    NodeDoesNotExist,
+    PortDoesNotExist,
+    Cycle,
+    ConnectionDoesNotExist,
+    RefDoesNotExist,
+    InvalidPortType,
+}
+
+impl std::error::Error for Error {}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::NodeDoesNotExist => write!(f, "Audio graph node does not exist"),
+            Error::PortDoesNotExist => write!(f, "Audio graph port does not exist"),
+            Error::Cycle => write!(f, "Audio graph cycle detected"),
+            Error::ConnectionDoesNotExist => write!(f, "Audio graph connection does not exist"),
+            Error::RefDoesNotExist => write!(f, "Audio graph reference does not exist"),
+            Error::InvalidPortType => write!(
+                f,
+                "Cannot connect audio graph ports. Ports are a different type"
+            ),
+        }
     }
 }
 
