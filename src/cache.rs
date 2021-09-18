@@ -5,14 +5,11 @@ use crate::scheduled::ScheduledNode;
 use crate::vec::Vec;
 use fnv::{FnvHashMap, FnvHashSet};
 use std::collections::VecDeque;
-use std::fmt;
 
 #[derive(Debug)]
 pub(crate) struct HeapStore<N, P, PT>
 where
-    N: fmt::Debug + Clone,
-    P: fmt::Debug + Clone,
-    PT: PortType + PartialEq,
+    PT: PortType,
 {
     pub walk_queue: Option<VecDeque<NodeRef>>,
     pub walk_indegree: Option<FnvHashMap<NodeRef, usize>>,
@@ -30,9 +27,9 @@ where
 
 impl<N, P, PT> Default for HeapStore<N, P, PT>
 where
-    N: fmt::Debug + Clone,
-    P: fmt::Debug + Clone,
-    PT: PortType + PartialEq,
+    N: Clone,
+    P: Clone,
+    PT: PortType,
 {
     fn default() -> Self {
         Self {

@@ -5,7 +5,8 @@ use crate::vec::Vec;
 /// A scheduled node is a node with buffers assigned to its input and output ports
 #[derive(Clone, Debug)]
 pub struct ScheduledNode<N, P, PT>
-where PT: PortType
+where
+    PT: PortType,
 {
     /// The node itself
     pub node: N,

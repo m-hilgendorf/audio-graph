@@ -52,16 +52,19 @@ impl From<PortRef> for usize {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Edge<PT: PortType + PartialEq> {
+struct Edge<P> {
     src_node: NodeRef,
     src_port: PortRef,
     dst_node: NodeRef,
     dst_port: PortRef,
-    type_: PT,
+    type_: P,
 }
 
-impl<PT: PortType + PartialEq> PartialEq for Edge<PT> {
-    fn eq(&self, other: &Edge<PT>) -> bool {
+impl<P> PartialEq for Edge<P>
+where
+    P: PortType + PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
         // For our purposes, comparing just src_port and dst_port is sufficient.
         // Ports can only be of one type, and they can only belong to one node.
         // Deleting ports should garauntee that all corresponding edges are also
@@ -70,30 +73,27 @@ impl<PT: PortType + PartialEq> PartialEq for Edge<PT> {
     }
 }
 
+#[derive(Debug)]
 pub struct Graph<N, P, PT>
 where
-    N: Debug + Clone,
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
+    PT: PortType,
 {
     edges: Vec<Vec<Edge<PT>>>,
     ports: Vec<Vec<PortRef>>,
     delays: Vec<u64>,
     port_data: Vec<(NodeRef, PT)>,
-
     port_identifiers: Vec<P>,
     node_identifiers: Vec<N>,
     free_nodes: Vec<NodeRef>,
     free_ports: Vec<PortRef>,
-
     heap_store: Option<HeapStore<N, P, PT>>,
 }
 
 impl<N, P, PT> Default for Graph<N, P, PT>
 where
-    N: Debug + Clone,
-    P: Debug + Clone,
-    PT: Debug + PortType + PartialEq,
+    N: Clone,
+    P: Clone,
+    PT: PortType,
 {
     fn default() -> Self {
         Self {
@@ -112,9 +112,9 @@ where
 
 impl<N, P, PT> Graph<N, P, PT>
 where
-    N: Debug + Clone,
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
+    N: Clone,
+    P: Clone,
+    PT: PortType,
 {
     pub fn node(&mut self, ident: N) -> NodeRef {
         if let Some(node) = self.free_nodes.pop() {
