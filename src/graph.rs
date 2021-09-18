@@ -1,7 +1,7 @@
 use crate::cache::HeapStore;
 use crate::error::Error;
 use crate::port_type::PortType;
-use crate::scheduled::Scheduled;
+use crate::scheduled::ScheduledNode;
 use crate::vec::Vec;
 use fnv::FnvHashMap;
 use std::fmt::Debug;
@@ -416,7 +416,7 @@ where
         }
     }
 
-    pub fn compile(&mut self) -> &[Scheduled<N, P, PT>] {
+    pub fn compile(&mut self) -> &[ScheduledNode<N, P, PT>] {
         let solve_latency_requirements =
             |graph: &mut Graph<N, P, PT>,
              node: NodeRef,
@@ -547,7 +547,7 @@ where
                 })
                 .collect::<Vec<_>>();
 
-            scheduled.push(Scheduled {
+            scheduled.push(ScheduledNode {
                 node: node_ident,
                 inputs,
                 outputs,

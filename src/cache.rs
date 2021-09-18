@@ -1,7 +1,7 @@
 use crate::buffer_allocator::{Buffer, BufferAllocator};
 use crate::graph::{NodeRef, PortRef};
 use crate::port_type::PortType;
-use crate::scheduled::Scheduled;
+use crate::scheduled::ScheduledNode;
 use crate::vec::Vec;
 use fnv::{FnvHashMap, FnvHashSet};
 use std::collections::VecDeque;
@@ -25,7 +25,7 @@ where
     pub input_assignments: FnvHashMap<(NodeRef, PortRef), Vec<(Buffer<PT>, (PortRef, PortRef))>>,
     pub output_assignments: FnvHashMap<(NodeRef, PortRef), (Buffer<PT>, usize)>,
     pub scheduled_nodes: Option<Vec<NodeRef>>,
-    pub scheduled: Option<Vec<Scheduled<N, P, PT>>>,
+    pub scheduled: Option<Vec<ScheduledNode<N, P, PT>>>,
 }
 
 impl<N, P, PT> Default for HeapStore<N, P, PT>
