@@ -15,6 +15,7 @@ where
 }
 
 /// The buffer allocator is a stack based allocator that reuses buffers as needed
+#[derive(Debug)]
 pub struct BufferAllocator<P> {
     buffer_count_stacks: Vec<(usize, Vec<usize>)>,
     _phantom_port_type: PhantomData<P>,

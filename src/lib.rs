@@ -1,23 +1,37 @@
-use fnv::{FnvHashMap, FnvHashSet};
+use fnv::FnvHashMap;
 use smallvec::smallvec as vec;
-use smallvec::SmallVec;
 use std::fmt::Debug;
 use std::{borrow::Borrow, collections::VecDeque};
 mod buffer_allocator;
+mod cache;
 mod error;
 mod port_type;
-use buffer_allocator::{Buffer, BufferAllocator};
+mod scheduled;
+mod vec;
+use cache::HeapStore;
+
+use crate::vec::Vec;
 pub use error::Error;
 pub use port_type::{DefaultPortType, PortType};
+pub use scheduled::Scheduled;
 
-type Vec<T> = SmallVec<[T; 16]>;
-
+/// A reference to a node in the graph
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct NodeRef(usize);
 
-impl From<NodeRef> for usize {
-    fn from(n: NodeRef) -> Self {
-        n.0
+/// A reference to a port in the graph
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct PortRef(usize);
+
+impl NodeRef {
+    pub fn new(u: usize) -> Self {
+        Self(u)
+    }
+}
+
+impl PortRef {
+    pub fn new(u: usize) -> Self {
+        Self(u)
     }
 }
 
@@ -27,12 +41,21 @@ impl Borrow<usize> for NodeRef {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub struct PortRef(usize);
-
 impl Borrow<usize> for PortRef {
     fn borrow(&self) -> &'_ usize {
         &self.0
+    }
+}
+
+impl From<NodeRef> for usize {
+    fn from(node: NodeRef) -> Self {
+        node.0
+    }
+}
+
+impl From<PortRef> for usize {
+    fn from(port: PortRef) -> Self {
+        port.0
     }
 }
 
@@ -52,64 +75,6 @@ impl<PT: PortType + PartialEq> PartialEq for Edge<PT> {
         // Deleting ports should garauntee that all corresponding edges are also
         // deleted, so reusing ports should not cause a problem.
         self.src_port == other.src_port && self.dst_port == other.dst_port
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Scheduled<N, P, PT>
-where
-    N: Debug + Clone,
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
-{
-    pub node: N,
-    pub inputs: Vec<(P, Vec<(Buffer<PT>, u64)>)>,
-    pub outputs: Vec<(P, Buffer<PT>)>,
-}
-
-pub struct HeapStore<N, P, PT>
-where
-    N: Debug + Clone,
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
-{
-    walk_queue: Option<VecDeque<NodeRef>>,
-    walk_indegree: Option<FnvHashMap<NodeRef, usize>>,
-    cycle_queued: Option<FnvHashSet<NodeRef>>,
-
-    latencies: Vec<u64>,
-    all_latencies: Vec<Option<u64>>,
-    deps: Vec<NodeRef>,
-    allocator: BufferAllocator<PT>,
-    delay_comps: Option<FnvHashMap<(PortRef, PortRef), u64>>,
-    input_assignments: FnvHashMap<(NodeRef, PortRef), Vec<(Buffer<PT>, (PortRef, PortRef))>>,
-    output_assignments: FnvHashMap<(NodeRef, PortRef), (Buffer<PT>, usize)>,
-    scheduled_nodes: Option<Vec<NodeRef>>,
-
-    scheduled: Option<Vec<Scheduled<N, P, PT>>>,
-}
-
-impl<N, P, PT> Default for HeapStore<N, P, PT>
-where
-    N: Debug + Clone,
-    P: Debug + Clone,
-    PT: PortType + PartialEq,
-{
-    fn default() -> Self {
-        Self {
-            walk_queue: Some(VecDeque::new()),
-            walk_indegree: Some(FnvHashMap::default()),
-            cycle_queued: Some(FnvHashSet::default()),
-            latencies: Vec::new(),
-            all_latencies: Vec::new(),
-            deps: Vec::new(),
-            allocator: BufferAllocator::default(),
-            delay_comps: Some(FnvHashMap::default()),
-            input_assignments: FnvHashMap::default(),
-            output_assignments: FnvHashMap::default(),
-            scheduled_nodes: Some(Vec::new()),
-            scheduled: None,
-        }
     }
 }
 
@@ -136,7 +101,7 @@ impl<N, P, PT> Default for Graph<N, P, PT>
 where
     N: Debug + Clone,
     P: Debug + Clone,
-    PT: PortType + PartialEq,
+    PT: Debug + PortType + PartialEq,
 {
     fn default() -> Self {
         Self {
@@ -161,7 +126,7 @@ where
 {
     pub fn node(&mut self, ident: N) -> NodeRef {
         if let Some(node) = self.free_nodes.pop() {
-            let id = node.0;
+            let id: usize = node.0;
             self.edges[id].clear();
             self.ports[id].clear();
             self.delays[id] = 0;
@@ -173,7 +138,7 @@ where
             self.ports.push(vec![]);
             self.delays.push(0);
             self.node_identifiers.push(ident);
-            NodeRef(id)
+            NodeRef::new(id)
         }
     }
 
@@ -185,7 +150,7 @@ where
                 self.port_identifiers[port.0] = ident;
                 Ok(port)
             } else {
-                let port = PortRef(self.port_count());
+                let port = PortRef::new(self.port_count());
 
                 self.ports[node.0].push(port);
                 self.port_data.push((node, type_));
@@ -254,17 +219,6 @@ where
             dst_port: dst,
             type_: src_type,
         };
-
-        /* TODO: Maybe use the log crate for this to avoid polluting the user's output?
-        println!(
-            "connection {}.{} to {}.{} with edge: {:?}",
-            self.node_name(src_node).unwrap(),
-            self.port_name(src).unwrap(),
-            self.node_name(dst_node).unwrap(),
-            self.port_name(dst).unwrap(),
-            edge
-        );
-        */
 
         self.edges[src_node.0].push(edge);
         self.edges[dst_node.0].push(edge);
@@ -443,7 +397,7 @@ where
         indegree.clear();
 
         for node_index in 0..self.node_count() {
-            indegree.insert(NodeRef(node_index), 0);
+            indegree.insert(NodeRef::new(node_index), 0);
         }
         for node in &self.free_nodes {
             indegree.remove(node);
@@ -624,6 +578,7 @@ where
             .unwrap()
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
