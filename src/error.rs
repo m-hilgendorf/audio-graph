@@ -30,6 +30,34 @@ impl fmt::Display for Error {
                 Error::RefDoesNotExist => "Reference does not exist",
                 Error::InvalidPortType => "Cannot connect ports. Ports are a different type"
             };
-        write!(f, "Audio Greph Error: {}.", error_string)
+        write!(f, "Audio Graph Error: {}.", error_string)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn errror_strings () {
+        let errors = [
+            Error::NodeDoesNotExist,
+            Error::PortDoesNotExist,
+            Error::Cycle,
+            Error::ConnectionDoesNotExist,
+            Error::RefDoesNotExist,
+            Error::InvalidPortType
+        ];
+        let strings = [
+            "Audio Graph Error: Node does not exist.",
+            "Audio Graph Error: Port does not exist.",
+            "Audio Graph Error: Cycle detected.",
+            "Audio Graph Error: Connection does not exist.",
+            "Audio Graph Error: Reference does not exist.",
+            "Audio Graph Error: Cannot connect ports. Ports are a different type.",
+        ];
+        for (e, s) in errors.iter().zip(strings.iter()) {
+            assert_eq!(e.to_string(), *s);
+        }
     }
 }
