@@ -1,3 +1,6 @@
+use std::fmt;
+use std::error;
+
 /// Errors that may arise when compiling a graph
 #[derive(Debug, Clone, Copy)]
 pub enum Error {
@@ -15,19 +18,18 @@ pub enum Error {
     InvalidPortType,
 }
 
-impl std::error::Error for Error {}
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::NodeDoesNotExist => write!(f, "Audio graph node does not exist"),
-            Error::PortDoesNotExist => write!(f, "Audio graph port does not exist"),
-            Error::Cycle => write!(f, "Audio graph cycle detected"),
-            Error::ConnectionDoesNotExist => write!(f, "Audio graph connection does not exist"),
-            Error::RefDoesNotExist => write!(f, "Audio graph reference does not exist"),
-            Error::InvalidPortType => write!(
-                f,
-                "Cannot connect audio graph ports. Ports are a different type"
-            ),
-        }
+impl error::Error for Error {}
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+        let error_string = 
+            match self {
+                Error::NodeDoesNotExist => "Node does not exist",
+                Error::PortDoesNotExist => "Port does not exist",
+                Error::Cycle => "Cycle detected",
+                Error::ConnectionDoesNotExist => "Connection does not exist",
+                Error::RefDoesNotExist => "Reference does not exist",
+                Error::InvalidPortType => "Cannot connect ports. Ports are a different type"
+            };
+        write!(f, "Audio Greph Error: {}.", error_string)
     }
 }
