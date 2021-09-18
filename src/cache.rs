@@ -1,8 +1,8 @@
 use crate::buffer_allocator::{Buffer, BufferAllocator};
+use crate::graph::{NodeRef, PortRef};
 use crate::port_type::PortType;
 use crate::scheduled::Scheduled;
 use crate::vec::Vec;
-use crate::{NodeRef, PortRef};
 use fnv::{FnvHashMap, FnvHashSet};
 use std::collections::VecDeque;
 use std::fmt;
