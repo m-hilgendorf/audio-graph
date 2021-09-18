@@ -2,10 +2,13 @@ use fnv::{FnvHashMap, FnvHashSet};
 use smallvec::smallvec as vec;
 use smallvec::SmallVec;
 use std::fmt::Debug;
-use std::marker::PhantomData;
 use std::{borrow::Borrow, collections::VecDeque};
+mod buffer_allocator;
 mod error;
+mod port_type;
+use buffer_allocator::{Buffer, BufferAllocator};
 pub use error::Error;
+pub use port_type::{DefaultPortType, PortType};
 
 type Vec<T> = SmallVec<[T; 16]>;
 
@@ -33,31 +36,6 @@ impl Borrow<usize> for PortRef {
     }
 }
 
-pub trait PortType: Debug + Clone + Copy + Eq + std::hash::Hash {
-    fn into_index(&self) -> usize;
-    fn num_types() -> usize;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DefaultPortType {
-    Audio,
-    Event,
-}
-
-impl PortType for DefaultPortType {
-    #[inline]
-    fn into_index(&self) -> usize {
-        match self {
-            DefaultPortType::Audio => 0,
-            DefaultPortType::Event => 1,
-        }
-    }
-
-    fn num_types() -> usize {
-        2
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct Edge<PT: PortType + PartialEq> {
     src_node: NodeRef,
@@ -75,62 +53,6 @@ impl<PT: PortType + PartialEq> PartialEq for Edge<PT> {
         // deleted, so reusing ports should not cause a problem.
         self.src_port == other.src_port && self.dst_port == other.dst_port
     }
-}
-
-struct BufferAllocator<PT: PortType + PartialEq> {
-    buffer_count_stacks: Vec<(usize, Vec<usize>)>,
-    _phantom_port_type: PhantomData<PT>,
-}
-
-impl<PT: PortType + PartialEq> BufferAllocator<PT> {
-    fn clear(&mut self) {
-        for (c, s) in self.buffer_count_stacks.iter_mut() {
-            *c = 0;
-            s.clear();
-        }
-    }
-
-    fn acquire(&mut self, type_: PT) -> Buffer<PT> {
-        let type_index = type_.into_index();
-        let (count, stack) = &mut self.buffer_count_stacks[type_index];
-
-        if let Some(index) = stack.pop() {
-            Buffer { index, type_ }
-        } else {
-            let buffer = Buffer {
-                index: *count,
-                type_,
-            };
-            *count += 1;
-            buffer
-        }
-    }
-
-    fn release(&mut self, ref_: Buffer<PT>) {
-        let type_index = ref_.type_.into_index();
-        let stack = &mut self.buffer_count_stacks[type_index].1;
-        stack.push(ref_.index);
-    }
-}
-
-impl<PT: PortType> Default for BufferAllocator<PT> {
-    fn default() -> Self {
-        let num_types = PT::num_types();
-        let mut buffer_count_stacks = Vec::<(usize, Vec<usize>)>::new();
-        for _ in 0..num_types {
-            buffer_count_stacks.push((0, Vec::new()));
-        }
-        Self {
-            buffer_count_stacks,
-            _phantom_port_type: PhantomData::default(),
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct Buffer<PT: PortType + PartialEq> {
-    index: usize,
-    type_: PT,
 }
 
 #[derive(Clone, Debug)]
@@ -794,7 +716,7 @@ mod tests {
 
                 if *port == "d_input_1" {
                     for (b, delay_comp) in buffers {
-                        println!("        index: {}", b.index);
+                        println!("        index: {}", b.buffer_id);
                         println!("        delay_comp: {}", delay_comp);
                     }
 
@@ -806,7 +728,7 @@ mod tests {
                     )
                 } else {
                     for (b, delay_comp) in buffers {
-                        println!("        index: {}", b.index);
+                        println!("        index: {}", b.buffer_id);
                         println!("        delay_comp: {}", delay_comp);
 
                         if *port == "d_input_2" {
@@ -818,7 +740,7 @@ mod tests {
                 }
             }
             for (port, buffer) in entry.outputs.iter() {
-                println!("    {:?} => {}", port, buffer.index);
+                println!("    {:?} => {}", port, buffer.buffer_id);
             }
             last_node = Some(entry.node.clone());
         }
