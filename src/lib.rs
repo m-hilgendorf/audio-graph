@@ -4,6 +4,8 @@ use smallvec::SmallVec;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::{borrow::Borrow, collections::VecDeque};
+mod error;
+pub use error::Error;
 
 type Vec<T> = SmallVec<[T; 16]>;
 
@@ -700,35 +702,6 @@ where
             .unwrap()
     }
 }
-
-#[derive(Debug, Clone, Copy)]
-pub enum Error {
-    NodeDoesNotExist,
-    PortDoesNotExist,
-    Cycle,
-    ConnectionDoesNotExist,
-    RefDoesNotExist,
-    InvalidPortType,
-}
-
-impl std::error::Error for Error {}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::NodeDoesNotExist => write!(f, "Audio graph node does not exist"),
-            Error::PortDoesNotExist => write!(f, "Audio graph port does not exist"),
-            Error::Cycle => write!(f, "Audio graph cycle detected"),
-            Error::ConnectionDoesNotExist => write!(f, "Audio graph connection does not exist"),
-            Error::RefDoesNotExist => write!(f, "Audio graph reference does not exist"),
-            Error::InvalidPortType => write!(
-                f,
-                "Cannot connect audio graph ports. Ports are a different type"
-            ),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
