@@ -18,6 +18,8 @@ Work in progress audio graph implementation
 use audio_graph::*;
 
 let mut graph = Graph::default();
+let mut schedule = Schedule::default();
+
 let input1 = graph.node("Input 1");
 let input2 = graph.node("Input 2");
 let output = graph.node("Output");
@@ -32,29 +34,36 @@ graph.connect(port2, out_port)?;
 // set input_1 to have a delay of 2 samples
 graph.set_delay(input_1, 2)?;
 
-let schedule = graph.compile();
+graph.compile(&mut schedule);
 for entry in schedule {
-    let node_name = entry.node;
+    let node_name = graph.node_ident(entry.node)?;
+
     // inputs may have multiple buffers to handle, in which case the
     // buffers will need to be mixed together into a single buffer
     // before being sent to the node
-    for (port_name, buffers) in entry.inputs {
-        for (buf, delay_comp) in buffers {
-            // index of the buffer
-            let index = b.index;
+    for (port, buffers) in entry.inputs {
+        let port_name = graph.port_ident(entry.node)?;
 
-            // delay compensation that needs to be applied to the
-            // contents of this buffer before being mixed & sent to
-            // the node
-            let delay_comp = *delay_comp;
+        for (buf, delay_comp) in buffers {
+            // id (index) of the buffer
+            let buffer_id = buf.buffer_id;
+
+            if let Some(delay_comp) = delay_comp {
+                // delay compensation that needs to be applied to the
+                // contents of this buffer before being mixed & sent to
+                // the node
+                let delay = delay_comp.delay;
+            }
 
             // ... 
         }
     }
     // outputs have exactly one buffer they write to
-    for (port_name, buf) in entry.outputs {
-        // index of the buffer
-        let index = b.index;
+    for (port, buf) in entry.outputs {
+        let port_name = graph.port_ident(entry.node)?;
+
+        // id (index) of the buffer
+        let buffer_id = buf.buffer_id;
 
         // ... 
     }
