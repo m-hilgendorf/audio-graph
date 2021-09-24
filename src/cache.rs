@@ -1,13 +1,12 @@
 use crate::buffer_allocator::{Buffer, BufferAllocator};
 use crate::graph::{NodeRef, PortRef};
 use crate::port_type::PortType;
-use crate::scheduled::ScheduledNode;
 use crate::vec::Vec;
 use fnv::{FnvHashMap, FnvHashSet};
 use std::collections::VecDeque;
 
 #[derive(Debug)]
-pub(crate) struct HeapStore<N, P, PT>
+pub(crate) struct HeapStore<PT>
 where
     PT: PortType,
 {
@@ -19,16 +18,14 @@ where
     pub deps: Vec<NodeRef>,
     pub allocator: BufferAllocator<PT>,
     pub delay_comps: Option<FnvHashMap<(PortRef, PortRef), u64>>,
-    pub input_assignments: FnvHashMap<(NodeRef, PortRef), Vec<(Buffer<PT>, (PortRef, PortRef))>>,
+    pub input_assignments:
+        FnvHashMap<(NodeRef, PortRef), Vec<(Buffer<PT>, PortRef, PortRef, NodeRef)>>,
     pub output_assignments: FnvHashMap<(NodeRef, PortRef), (Buffer<PT>, usize)>,
     pub scheduled_nodes: Option<Vec<NodeRef>>,
-    pub scheduled: Option<Vec<ScheduledNode<N, P, PT>>>,
 }
 
-impl<N, P, PT> Default for HeapStore<N, P, PT>
+impl<PT> Default for HeapStore<PT>
 where
-    N: Clone,
-    P: Clone,
     PT: PortType,
 {
     fn default() -> Self {
@@ -44,7 +41,6 @@ where
             input_assignments: FnvHashMap::default(),
             output_assignments: FnvHashMap::default(),
             scheduled_nodes: Some(Vec::new()),
-            scheduled: None,
         }
     }
 }

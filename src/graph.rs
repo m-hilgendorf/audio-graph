@@ -1,7 +1,7 @@
 use crate::cache::HeapStore;
 use crate::error::Error;
 use crate::port_type::PortType;
-use crate::scheduled::ScheduledNode;
+use crate::scheduled::{DelayCompInfo, Schedule, ScheduledNode};
 use crate::vec::Vec;
 use fnv::FnvHashMap;
 use std::fmt::Debug;
@@ -86,7 +86,7 @@ where
     node_identifiers: Vec<N>,
     free_nodes: Vec<NodeRef>,
     free_ports: Vec<PortRef>,
-    heap_store: Option<HeapStore<N, P, PT>>,
+    heap_store: Option<HeapStore<PT>>,
 }
 
 impl<N, P, PT> Default for Graph<N, P, PT>
@@ -380,10 +380,10 @@ where
     /// Walk graph in topological order using Kahn's algorithm.
     fn walk_mut(
         &mut self,
-        heap_store: &mut HeapStore<N, P, PT>,
+        heap_store: &mut HeapStore<PT>,
         queue: &mut VecDeque<NodeRef>,
         indegree: &mut FnvHashMap<NodeRef, usize>,
-        mut f: impl FnMut(&mut Graph<N, P, PT>, NodeRef, &mut HeapStore<N, P, PT>),
+        mut f: impl FnMut(&mut Graph<N, P, PT>, NodeRef, &mut HeapStore<PT>),
     ) {
         queue.clear();
         indegree.clear();
@@ -416,11 +416,11 @@ where
         }
     }
 
-    pub fn compile(&mut self) -> &[ScheduledNode<N, P, PT>] {
+    pub fn compile(&mut self, schedule: &mut Schedule<PT>) {
         let solve_latency_requirements =
             |graph: &mut Graph<N, P, PT>,
              node: NodeRef,
-             heap_store: &mut HeapStore<N, P, PT>,
+             heap_store: &mut HeapStore<PT>,
              delay_comps: &mut FnvHashMap<(PortRef, PortRef), u64>| {
                 heap_store.deps.clear();
                 heap_store.latencies.clear();
@@ -449,7 +449,7 @@ where
             };
 
         let solve_buffer_requirements =
-            |graph: &Graph<N, P, PT>, node: NodeRef, heap_store: &mut HeapStore<N, P, PT>| {
+            |graph: &Graph<N, P, PT>, node: NodeRef, heap_store: &mut HeapStore<PT>| {
                 for port in &graph.ports[node.0] {
                     let (_, type_) = graph.port_data[port.0];
 
@@ -463,7 +463,7 @@ where
                             .input_assignments
                             .entry((output.dst_node, output.dst_port))
                             .or_insert(smallvec::smallvec![])
-                            .push((*buffer, (output.src_port, output.dst_port)));
+                            .push((*buffer, output.src_port, output.dst_port, output.src_node));
                     }
                     for input in graph.incoming(*port) {
                         let (buffer, count) = heap_store
@@ -478,11 +478,10 @@ where
                 }
             };
 
+        schedule.scheduled.clear();
+
         // This won't panic because this is always `Some` on the user's end.
         let mut heap_store = self.heap_store.take().unwrap();
-
-        let mut scheduled = heap_store.scheduled.take().unwrap_or_default();
-        scheduled.clear();
 
         heap_store.all_latencies.clear();
         heap_store.all_latencies.resize(self.node_count(), None);
@@ -515,8 +514,6 @@ where
         );
 
         for node in scheduled_nodes.iter() {
-            let node_ident = self.node_identifiers[node.0].clone();
-
             let inputs = self.ports[node.0]
                 .iter()
                 .filter_map(|port| {
@@ -526,14 +523,27 @@ where
                         .map(|buffers| {
                             let buffers = buffers
                                 .iter()
-                                .map(|(buffer, ports)| {
-                                    let delay_comp = delay_comps.get(ports).copied().unwrap_or(0);
+                                .map(|(buffer, src_port, dst_port, src_node)| {
+                                    let delay = delay_comps
+                                        .get(&(*src_port, *dst_port))
+                                        .copied()
+                                        .unwrap_or(0);
 
-                                    (*buffer, delay_comp)
+                                    let delay_comp_info = if delay == 0 {
+                                        None
+                                    } else {
+                                        Some(DelayCompInfo {
+                                            delay,
+                                            source_node: *src_node,
+                                            source_port: *src_port,
+                                        })
+                                    };
+
+                                    (*buffer, delay_comp_info)
                                 })
                                 .collect();
 
-                            (self.port_identifiers[port.0].clone(), buffers)
+                            (*port, buffers)
                         })
                 })
                 .collect::<Vec<_>>();
@@ -543,30 +553,22 @@ where
                     heap_store
                         .output_assignments
                         .get(&(*node, *port))
-                        .map(|(buffer, _)| (self.port_identifiers[port.0].clone(), *buffer))
+                        .map(|(buffer, _)| (*port, *buffer))
                 })
                 .collect::<Vec<_>>();
 
-            scheduled.push(ScheduledNode {
-                node: node_ident,
+            schedule.scheduled.push(ScheduledNode {
+                node: *node,
                 inputs,
                 outputs,
             });
         }
 
-        heap_store.scheduled = Some(scheduled);
         heap_store.delay_comps = Some(delay_comps);
         heap_store.scheduled_nodes = Some(scheduled_nodes);
         heap_store.walk_queue = Some(queue);
         heap_store.walk_indegree = Some(indegree);
 
         self.heap_store = Some(heap_store);
-
-        self.heap_store
-            .as_ref()
-            .unwrap()
-            .scheduled
-            .as_ref()
-            .unwrap()
     }
 }

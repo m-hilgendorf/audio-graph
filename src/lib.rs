@@ -9,7 +9,7 @@ mod vec;
 pub use error::Error;
 pub use graph::{Graph, NodeRef, PortRef};
 pub use port_type::{DefaultPortType, PortType};
-pub use scheduled::ScheduledNode;
+pub use scheduled::{Schedule, ScheduledNode};
 
 #[cfg(test)]
 mod tests {
@@ -47,6 +47,7 @@ mod tests {
     #[test]
     fn simple_graph() {
         let mut graph = Graph::default();
+        let mut schedule = Schedule::default();
         let (a, b, c, d) = (
             graph.node("A"),
             graph.node("B"),
@@ -95,32 +96,36 @@ mod tests {
             .expect_err("Cycles should not be allowed");
 
         let mut last_node = None;
-        for entry in graph.compile() {
-            println!("process {:?}:", entry.node);
-            for (port, buffers) in entry.inputs.iter() {
-                println!("    {} => ", port);
+        graph.compile(&mut schedule);
+        for entry in schedule.scheduled {
+            let node_id = graph.node_ident(entry.node).unwrap();
+            println!("process {:?}:", node_id);
 
-                if *port == "d_input_1" {
+            for (port, buffers) in entry.inputs.iter() {
+                let port_id = graph.port_ident(*port).unwrap();
+                println!("    {} => ", port_id);
+
+                if *port_id == "d_input_1" {
                     for (b, delay_comp) in buffers {
                         println!("        index: {}", b.buffer_id);
-                        println!("        delay_comp: {}", delay_comp);
+                        println!("        delay_comp: {:?}", delay_comp);
                     }
 
-                    // One of the buffers should have a delay_comp of 0, and one
+                    // One of the buffers should have a delay_comp of 0 (None), and one
                     // should have a delay_comp of 3
-                    assert!(
-                        (buffers[0].1 == 0 && buffers[1].1 == 3)
-                            || (buffers[0].1 == 3 && buffers[1].1 == 0)
-                    )
+                    let delay_1 = buffers[0].1.as_ref().map(|d| d.delay).unwrap_or(0);
+                    let delay_2 = buffers[1].1.as_ref().map(|d| d.delay).unwrap_or(0);
+                    assert!((delay_1 == 0 && delay_2 == 3) || (delay_1 == 3 && delay_2 == 0))
                 } else {
                     for (b, delay_comp) in buffers {
                         println!("        index: {}", b.buffer_id);
-                        println!("        delay_comp: {}", delay_comp);
+                        println!("        delay_comp: {:?}", delay_comp);
 
-                        if *port == "d_input_2" {
-                            assert_eq!(*delay_comp, 3);
+                        let delay = delay_comp.as_ref().map(|d| d.delay).unwrap_or(0);
+                        if *port_id == "d_input_2" {
+                            assert_eq!(delay, 3);
                         } else {
-                            assert_eq!(*delay_comp, 0);
+                            assert_eq!(delay, 0);
                         }
                     }
                 }
@@ -130,6 +135,8 @@ mod tests {
             }
             last_node = Some(entry.node.clone());
         }
-        assert!(matches!(last_node, Some("D")));
+
+        let last_node_id = last_node.map(|n| *graph.node_ident(n).unwrap());
+        assert!(matches!(last_node_id, Some("D")));
     }
 }

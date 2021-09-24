@@ -3,7 +3,7 @@ use std::fmt;
 /// An abstract port type.
 pub trait PortType
 where
-    Self: fmt::Debug + Clone + Copy + Eq + std::hash::Hash,
+    Self: Default + fmt::Debug + Clone + Copy + Eq + std::hash::Hash,
 {
     /// The total number of all port types
     const NUM_TYPES: usize;
@@ -18,6 +18,12 @@ pub enum DefaultPortType {
     Audio,
     /// Event (non-audio) ports
     Event,
+}
+
+impl Default for DefaultPortType {
+    fn default() -> Self {
+        DefaultPortType::Audio
+    }
 }
 
 impl PortType for DefaultPortType {
