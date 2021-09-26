@@ -47,7 +47,6 @@ mod tests {
     #[test]
     fn simple_graph() {
         let mut graph = Graph::default();
-        let mut schedule = Schedule::default();
         let (a, b, c, d) = (
             graph.node("A"),
             graph.node("B"),
@@ -96,16 +95,12 @@ mod tests {
             .expect_err("Cycles should not be allowed");
 
         let mut last_node = None;
-        graph.compile(&mut schedule);
-        for entry in schedule.scheduled {
-            let node_id = graph.node_ident(entry.node).unwrap();
-            println!("process {:?}:", node_id);
-
+        for entry in graph.compile().scheduled {
+            println!("process {:?}:", entry.node);
             for (port, buffers) in entry.inputs.iter() {
-                let port_id = graph.port_ident(*port).unwrap();
-                println!("    {} => ", port_id);
+                println!("    {} => ", port);
 
-                if *port_id == "d_input_1" {
+                if *port == "d_input_1" {
                     for (b, delay_comp) in buffers {
                         println!("        index: {}", b.buffer_id);
                         println!("        delay_comp: {:?}", delay_comp);
@@ -122,7 +117,7 @@ mod tests {
                         println!("        delay_comp: {:?}", delay_comp);
 
                         let delay = delay_comp.as_ref().map(|d| d.delay).unwrap_or(0);
-                        if *port_id == "d_input_2" {
+                        if *port == "d_input_2" {
                             assert_eq!(delay, 3);
                         } else {
                             assert_eq!(delay, 0);
@@ -135,8 +130,6 @@ mod tests {
             }
             last_node = Some(entry.node.clone());
         }
-
-        let last_node_id = last_node.map(|n| *graph.node_ident(n).unwrap());
-        assert!(matches!(last_node_id, Some("D")));
+        assert!(matches!(last_node, Some("D")));
     }
 }

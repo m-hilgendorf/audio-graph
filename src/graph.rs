@@ -416,7 +416,7 @@ where
         }
     }
 
-    pub fn compile(&mut self, schedule: &mut Schedule<PT>) {
+    pub fn compile(&mut self) -> Schedule<N, P, PT> {
         let solve_latency_requirements =
             |graph: &mut Graph<N, P, PT>,
              node: NodeRef,
@@ -478,7 +478,11 @@ where
                 }
             };
 
-        schedule.scheduled.clear();
+        // Allocate a schedule with a capacity of the active nodes in the graph.
+        let num_nodes = self.node_count() - self.free_nodes.len();
+        let mut schedule = Schedule {
+            scheduled: std::vec::Vec::with_capacity(num_nodes),
+        };
 
         // This won't panic because this is always `Some` on the user's end.
         let mut heap_store = self.heap_store.take().unwrap();
@@ -514,6 +518,8 @@ where
         );
 
         for node in scheduled_nodes.iter() {
+            let node_ident = self.node_identifiers[node.0].clone();
+
             let inputs = self.ports[node.0]
                 .iter()
                 .filter_map(|port| {
@@ -534,8 +540,8 @@ where
                                     } else {
                                         Some(DelayCompInfo {
                                             delay,
-                                            source_node: *src_node,
-                                            source_port: *src_port,
+                                            source_node: self.node_identifiers[src_node.0].clone(),
+                                            source_port: self.port_identifiers[src_port.0].clone(),
                                         })
                                     };
 
@@ -543,22 +549,22 @@ where
                                 })
                                 .collect();
 
-                            (*port, buffers)
+                            (self.port_identifiers[port.0].clone(), buffers)
                         })
                 })
-                .collect::<Vec<_>>();
+                .collect();
             let outputs = self.ports[node.0]
                 .iter()
                 .filter_map(|port| {
                     heap_store
                         .output_assignments
                         .get(&(*node, *port))
-                        .map(|(buffer, _)| (*port, *buffer))
+                        .map(|(buffer, _)| (self.port_identifiers[port.0].clone(), *buffer))
                 })
-                .collect::<Vec<_>>();
+                .collect();
 
             schedule.scheduled.push(ScheduledNode {
-                node: *node,
+                node: node_ident,
                 inputs,
                 outputs,
             });
@@ -570,5 +576,7 @@ where
         heap_store.walk_indegree = Some(indegree);
 
         self.heap_store = Some(heap_store);
+
+        schedule
     }
 }

@@ -18,7 +18,6 @@ Work in progress audio graph implementation
 use audio_graph::*;
 
 let mut graph = Graph::default();
-let mut schedule = Schedule::default();
 
 let input1 = graph.node("Input 1");
 let input2 = graph.node("Input 2");
@@ -34,16 +33,14 @@ graph.connect(port2, out_port)?;
 // set input_1 to have a delay of 2 samples
 graph.set_delay(input_1, 2)?;
 
-graph.compile(&mut schedule);
-for entry in schedule {
-    let node_name = graph.node_ident(entry.node)?;
+let schedule = graph.compile(&mut schedule);
+for entry in schedule.scheduled {
+    let node_name = entry.node;
 
     // inputs may have multiple buffers to handle, in which case the
     // buffers will need to be mixed together into a single buffer
     // before being sent to the node
-    for (port, buffers) in entry.inputs {
-        let port_name = graph.port_ident(entry.node)?;
-
+    for (port_name, buffers) in entry.inputs {
         for (buf, delay_comp) in buffers {
             // id (index) of the buffer
             let buffer_id = buf.buffer_id;
@@ -59,9 +56,7 @@ for entry in schedule {
         }
     }
     // outputs have exactly one buffer they write to
-    for (port, buf) in entry.outputs {
-        let port_name = graph.port_ident(entry.node)?;
-
+    for (port_name, buf) in entry.outputs {
         // id (index) of the buffer
         let buffer_id = buf.buffer_id;
 
