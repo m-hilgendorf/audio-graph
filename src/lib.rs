@@ -9,7 +9,7 @@ mod vec;
 pub use error::Error;
 pub use graph::{Graph, NodeRef, PortRef};
 pub use port_type::{DefaultPortType, PortType};
-pub use scheduled::{Schedule, ScheduledNode};
+pub use scheduled::ScheduledNode;
 
 #[cfg(test)]
 mod tests {
@@ -95,7 +95,7 @@ mod tests {
             .expect_err("Cycles should not be allowed");
 
         let mut last_node = None;
-        for entry in graph.compile().scheduled {
+        for entry in graph.compile() {
             println!("process {:?}:", entry.node);
             for (port, buffers) in entry.inputs.iter() {
                 println!("    {} => ", port);

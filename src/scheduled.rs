@@ -3,18 +3,6 @@ use smallvec::SmallVec;
 use crate::buffer_allocator::Buffer;
 use crate::port_type::PortType;
 
-/// The compiled schedule
-#[derive(Clone, Debug, Default)]
-pub struct Schedule<N, P, PT>
-where
-    PT: PortType,
-{
-    /// The scheduled nodes in sequential order
-    pub scheduled: Vec<ScheduledNode<N, P, PT>>,
-    // TODO: Put the total number of each type of buffer the user needs
-    // to allocate here for convenience?
-}
-
 /// A scheduled node is a node with buffers assigned to its input and output ports
 #[derive(Clone, Debug)]
 pub struct ScheduledNode<N, P, PT>

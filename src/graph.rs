@@ -1,7 +1,7 @@
 use crate::cache::HeapStore;
 use crate::error::Error;
 use crate::port_type::PortType;
-use crate::scheduled::{DelayCompInfo, Schedule, ScheduledNode};
+use crate::scheduled::{DelayCompInfo, ScheduledNode};
 use crate::vec::Vec;
 use fnv::FnvHashMap;
 use std::fmt::Debug;
@@ -86,7 +86,7 @@ where
     node_identifiers: Vec<N>,
     free_nodes: Vec<NodeRef>,
     free_ports: Vec<PortRef>,
-    heap_store: Option<HeapStore<PT>>,
+    heap_store: Option<HeapStore<N, P, PT>>,
 }
 
 impl<N, P, PT> Default for Graph<N, P, PT>
@@ -380,10 +380,10 @@ where
     /// Walk graph in topological order using Kahn's algorithm.
     fn walk_mut(
         &mut self,
-        heap_store: &mut HeapStore<PT>,
+        heap_store: &mut HeapStore<N, P, PT>,
         queue: &mut VecDeque<NodeRef>,
         indegree: &mut FnvHashMap<NodeRef, usize>,
-        mut f: impl FnMut(&mut Graph<N, P, PT>, NodeRef, &mut HeapStore<PT>),
+        mut f: impl FnMut(&mut Graph<N, P, PT>, NodeRef, &mut HeapStore<N, P, PT>),
     ) {
         queue.clear();
         indegree.clear();
@@ -416,11 +416,11 @@ where
         }
     }
 
-    pub fn compile(&mut self) -> Schedule<N, P, PT> {
+    pub fn compile(&mut self) -> &[ScheduledNode<N, P, PT>] {
         let solve_latency_requirements =
             |graph: &mut Graph<N, P, PT>,
              node: NodeRef,
-             heap_store: &mut HeapStore<PT>,
+             heap_store: &mut HeapStore<N, P, PT>,
              delay_comps: &mut FnvHashMap<(PortRef, PortRef), u64>| {
                 heap_store.deps.clear();
                 heap_store.latencies.clear();
@@ -449,7 +449,7 @@ where
             };
 
         let solve_buffer_requirements =
-            |graph: &Graph<N, P, PT>, node: NodeRef, heap_store: &mut HeapStore<PT>| {
+            |graph: &Graph<N, P, PT>, node: NodeRef, heap_store: &mut HeapStore<N, P, PT>| {
                 for port in &graph.ports[node.0] {
                     let (_, type_) = graph.port_data[port.0];
 
@@ -478,14 +478,17 @@ where
                 }
             };
 
-        // Allocate a schedule with a capacity of the active nodes in the graph.
-        let num_nodes = self.node_count() - self.free_nodes.len();
-        let mut schedule = Schedule {
-            scheduled: std::vec::Vec::with_capacity(num_nodes),
-        };
-
         // This won't panic because this is always `Some` on the user's end.
         let mut heap_store = self.heap_store.take().unwrap();
+
+        let mut scheduled = heap_store.scheduled.take().unwrap_or_default();
+        scheduled.clear();
+
+        // Allocate enough memory in the schedule for each active node.
+        let num_nodes = self.node_count() - self.free_nodes.len();
+        if scheduled.capacity() < num_nodes {
+            scheduled.reserve(num_nodes - scheduled.capacity());
+        }
 
         heap_store.all_latencies.clear();
         heap_store.all_latencies.resize(self.node_count(), None);
@@ -563,13 +566,14 @@ where
                 })
                 .collect();
 
-            schedule.scheduled.push(ScheduledNode {
+            scheduled.push(ScheduledNode {
                 node: node_ident,
                 inputs,
                 outputs,
             });
         }
 
+        heap_store.scheduled = Some(scheduled);
         heap_store.delay_comps = Some(delay_comps);
         heap_store.scheduled_nodes = Some(scheduled_nodes);
         heap_store.walk_queue = Some(queue);
@@ -577,6 +581,11 @@ where
 
         self.heap_store = Some(heap_store);
 
-        schedule
+        self.heap_store
+            .as_ref()
+            .unwrap()
+            .scheduled
+            .as_ref()
+            .unwrap()
     }
 }

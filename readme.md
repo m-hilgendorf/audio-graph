@@ -33,8 +33,7 @@ graph.connect(port2, out_port)?;
 // set input_1 to have a delay of 2 samples
 graph.set_delay(input_1, 2)?;
 
-let schedule = graph.compile(&mut schedule);
-for entry in schedule.scheduled {
+for entry in graph.compile() {
     let node_name = entry.node;
 
     // inputs may have multiple buffers to handle, in which case the
