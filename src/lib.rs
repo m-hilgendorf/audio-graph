@@ -9,7 +9,7 @@ mod vec;
 pub use error::Error;
 pub use graph::{Graph, NodeRef, PortRef};
 pub use port_type::{DefaultPortType, PortType};
-pub use scheduled::ScheduledNode;
+pub use scheduled::{DelayCompInfo, ScheduledNode};
 
 #[cfg(test)]
 mod tests {
