@@ -19,6 +19,10 @@ impl NodeRef {
     pub fn new(u: usize) -> Self {
         Self(u)
     }
+
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
 }
 
 impl PortRef {
@@ -52,12 +56,12 @@ impl From<PortRef> for usize {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Edge<P> {
-    src_node: NodeRef,
-    src_port: PortRef,
-    dst_node: NodeRef,
-    dst_port: PortRef,
-    type_: P,
+pub struct Edge<P> {
+    pub src_node: NodeRef,
+    pub src_port: PortRef,
+    pub dst_node: NodeRef,
+    pub dst_port: PortRef,
+    pub port_type: P,
 }
 
 impl<P> PartialEq for Edge<P>
@@ -134,18 +138,18 @@ where
         }
     }
 
-    pub fn port(&mut self, node: NodeRef, type_: PT, ident: P) -> Result<PortRef, Error> {
+    pub fn port(&mut self, node: NodeRef, port_type: PT, ident: P) -> Result<PortRef, Error> {
         if node.0 < self.node_count() && !self.free_nodes.contains(&node) {
             if let Some(port) = self.free_ports.pop() {
                 self.ports[node.0].push(port);
-                self.port_data[port.0] = (node, type_);
+                self.port_data[port.0] = (node, port_type);
                 self.port_identifiers[port.0] = ident;
                 Ok(port)
             } else {
                 let port = PortRef::new(self.port_count());
 
                 self.ports[node.0].push(port);
-                self.port_data.push((node, type_));
+                self.port_data.push((node, port_type));
                 self.port_identifiers.push(ident);
 
                 Ok(port)
@@ -209,7 +213,7 @@ where
             src_port: src,
             dst_node,
             dst_port: dst,
-            type_: src_type,
+            port_type: src_type,
         };
 
         self.edges[src_node.0].push(edge);
@@ -223,13 +227,13 @@ where
         self.port_check(dst)?;
         let (src_node, _) = self.port_data[src.0];
         let (dst_node, _) = self.port_data[dst.0];
-        let type_ = self.port_data[src.0].1;
+        let port_type = self.port_data[src.0].1;
         self.remove_edge(Edge {
             src_node,
             src_port: src,
             dst_node,
             dst_port: dst,
-            type_,
+            port_type,
         })
     }
 
@@ -247,6 +251,11 @@ where
     pub fn node_ident(&self, node: NodeRef) -> Result<&'_ N, Error> {
         self.node_check(node)?;
         Ok(&self.node_identifiers[node.0])
+    }
+
+    pub fn node_edges(&self, node: NodeRef) -> Result<&[Edge<PT>], Error> {
+        self.node_check(node)?;
+        Ok(&self.edges[node.0])
     }
 
     pub fn set_port_ident(&mut self, port: PortRef, ident: P) -> Result<(), Error> {
@@ -451,13 +460,13 @@ where
         let solve_buffer_requirements =
             |graph: &Graph<N, P, PT>, node: NodeRef, heap_store: &mut HeapStore<N, P, PT>| {
                 for port in &graph.ports[node.0] {
-                    let (_, type_) = graph.port_data[port.0];
+                    let (_, port_type) = graph.port_data[port.0];
 
                     for output in graph.outgoing(*port) {
                         let (buffer, count) = heap_store
                             .output_assignments
                             .entry((node, *port))
-                            .or_insert((heap_store.allocator.acquire(type_), 0));
+                            .or_insert((heap_store.allocator.acquire(port_type), 0));
                         *count += 1;
                         heap_store
                             .input_assignments
