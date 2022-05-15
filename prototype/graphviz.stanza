@@ -1,0 +1,43 @@
+defpackage audio-graph/graphviz : 
+  import core
+  import collections
+  import audio-graph/main
+
+
+defn print-port-list (ps:Seqable<Port>) : 
+  val ps* = to-seq(ps)
+  let loop (first?:True|False = true) :
+    if not empty?(ps*) : 
+      print("|") when not first?
+      val id = port-id(next(ps*))
+      print("<%_> P%_" % [id, id])
+      loop(false)
+  ; for p in ps do : 
+  ;   print("|<%_> %_" % [port-id(p), port-id(p)])
+
+defn print-node (node:Node) : 
+  print("node%_ [label=\"{N%_}|{{" % [node-id(node), node-id(node)])
+  print-port-list(inputs(node))
+  print("}|{%_ ms}|{" % [latency(node)])
+  print-port-list(outputs(node))
+  print("}}|{}\"]\n")
+
+defn print-edge (edge:Edge) :
+  println("node%_:%_ -> node%_:%_" % [
+    src-node(edge), src-port(edge)
+    dst-node(edge), dst-port(edge)
+  ])
+
+public defn print-graphviz (nodes:Tuple<Node>, edges:Tuple<Edge>) : 
+  val ob = StringBuffer()
+  defn driver () : 
+    println("digraph G {")
+    within indented() : 
+      println("node [shape=Mrecord];")
+      do(print-node, nodes)
+      do(print-edge, edges)
+    println("}")
+
+  with-output-stream(ob,driver)
+  println(to-string(ob))
+
