@@ -64,6 +64,6 @@ for entry in schedule {
 ## Constraints:
 
 - Ports are typed, and only ports of the same type can be connected. By default there is the `DefaultPortType` enum which has `Audio` and `Event`, but you may define your own types if you wish.
-- Ports can be bidirectional. This is a quirk of the current implementation, but don't rely on it.
+- Ports are unidirectional.
 - Cycles are not supported, and an error will be returned if tried.
 - Multithreaded schedules are not yet implemented.
