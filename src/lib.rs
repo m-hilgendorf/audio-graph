@@ -5,6 +5,8 @@ mod graph;
 mod port_type;
 mod scheduled;
 mod vec;
+pub mod input_ir;
+pub mod output_ir;
 
 pub use error::Error;
 pub use graph::{Graph, NodeRef, PortRef};
