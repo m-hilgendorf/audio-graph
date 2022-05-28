@@ -57,7 +57,7 @@ struct Edge<P> {
     src_port: PortRef,
     dst_node: NodeRef,
     dst_port: PortRef,
-    type_: P,
+    _type_: P,
 }
 
 impl<P> PartialEq for Edge<P>
@@ -209,7 +209,7 @@ where
             src_port: src,
             dst_node,
             dst_port: dst,
-            type_: src_type,
+            _type_: src_type,
         };
 
         self.edges[src_node.0].push(edge);
@@ -229,7 +229,7 @@ where
             src_port: src,
             dst_node,
             dst_port: dst,
-            type_,
+            _type_: type_,
         })
     }
 
