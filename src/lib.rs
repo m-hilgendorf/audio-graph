@@ -1,5 +1,6 @@
 #![allow(clippy::type_complexity)]
 mod buffer_allocator;
+mod buffer_allocator2;
 mod cache;
 mod error;
 mod graph;

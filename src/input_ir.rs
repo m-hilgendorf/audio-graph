@@ -35,7 +35,7 @@ pub struct Port {
     pub id: u64,
     /// A unique identifier for the type of data this port handles,
     /// for example nodes may have audio and event ports.
-    pub type_id: u64,
+    pub type_idx: usize,
 }
 
 /// An [Edge] is a connection from source node and port to a

@@ -80,9 +80,9 @@ pub struct BufferAssignment {
     /// passing it to a process
     pub should_clear: bool,
     /// The ID of the port this buffer is mapped to
-    pub port_id: usize,
+    pub port_id: u64,
     /// The ID of the node this buffer is mapped to
-    pub node_id: usize,
+    pub node_id: u64,
     /// Buffers are reused, the "generation" represnts
     /// how many times this buffer has been used before
     /// this assignment. Kept for debugging and visualization.
