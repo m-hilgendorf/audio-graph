@@ -1,7 +1,12 @@
+#![allow(clippy::type_complexity)]
 mod buffer_allocator;
+mod buffer_allocator2;
 mod cache;
 mod error;
 mod graph;
+pub mod graph_ir;
+pub mod input_ir;
+pub mod output_ir;
 mod port_type;
 mod scheduled;
 mod vec;

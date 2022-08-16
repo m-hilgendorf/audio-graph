@@ -1,0 +1,202 @@
+#use-added-syntax(tests)
+defpackage audio-graph/tests : 
+  import core
+  import collections
+  import audio-graph/graphviz
+  import audio-graph/main
+
+val AUDIO : Int = 0
+val EVENT : Int = 1
+
+deftest simple-parallel-graph : 
+  ; 1 ----> 2 -----*--> 4
+  ;   \           /
+  ;    * -> 3 - *
+  ;
+  val nodes = [
+    Node(2, [Port(21, AUDIO)], 
+            [Port(22, AUDIO)], 0.0)
+    Node(1, [], 
+            [Port(10, AUDIO)], 0.0)
+    Node(4, [Port(41, AUDIO)], 
+            [],                0.0)
+    Node(3, [Port(31, AUDIO)], 
+            [Port(32, AUDIO)], 0.0)
+  ]
+  
+  val edges = [
+    Edge(101, 1, 10, 3, 31)
+    Edge(103, 3, 32, 4, 41)
+    Edge(102, 2, 22, 4, 41)
+    Edge(100, 1, 10, 2, 21)
+  ]
+
+  print-graphviz(nodes, edges)
+  
+
+  val num-port-types = 1
+  val result = compile(1, nodes, edges)
+
+  #EXPECT(schedule(result)[0] is ScheduledNode)
+  #EXPECT(schedule(result)[1] is ScheduledNode)
+  #EXPECT(schedule(result)[2] is ScheduledNode)
+  #EXPECT(schedule(result)[3] is InsertedSum)
+  #EXPECT(schedule(result)[4] is ScheduledNode)
+  #EXPECT(num-buffers(result)[0] == [0, 4])
+
+  val e0 = schedule(result)[0] as ScheduledNode
+  val e1 = schedule(result)[1] as ScheduledNode
+  val e2 = schedule(result)[2] as ScheduledNode
+  val e3 = schedule(result)[3] as InsertedSum
+  val e4 = schedule(result)[4] as ScheduledNode
+
+  #EXPECT(empty?(input-buffers(e0)))
+  #EXPECT(buffer-id(input-buffers(e1)[0])  == buffer-id(input-buffers(e2)[0]))
+  #EXPECT(buffer-id(output-buffers(e1)[0]) != buffer-id(output-buffers(e2)[0]))
+  #EXPECT(buffer-id(input-buffers(e4)[0])  == buffer-id(output-buffers(e0)[0]))
+
+deftest parallel-buffer-allocation : 
+  ;             *-----> 2
+  ;            /       
+  ;   1 ------*         
+  ;            \
+  ;             * ----> 3          
+  ;            /
+  ;   4 ------*
+  ;            \      
+  ;             *-----> 5
+
+
+  val nodes = [
+    Node(1, [], 
+            [Port(11, AUDIO)], 0.0)
+    Node(2, [Port(21, AUDIO)], 
+            [], 0.0)
+    Node(3, [Port(31, AUDIO)], 
+            [], 0.0)
+    Node(4, [], 
+            [Port(41, AUDIO)], 0.0)
+    Node(5, [Port(51, AUDIO)], 
+            [],                0.0)
+  ]
+
+  val edges = [
+    Edge(100, 1, 11, 2, 21)
+    Edge(101, 1, 11, 3, 31)
+    Edge(102, 4, 41, 3, 31)
+    Edge(103, 4, 41, 5, 51)
+  ]
+  print-graphviz(nodes, edges)
+  
+  val result   = compile(1, nodes, edges)
+  val schedule = filter-by<ScheduledNode>(schedule(result))
+  val entries  = filter(contains?{[2 3 5], node-id(_)} schedule)
+  val inputs   = to-tuple $ seq-cat(input-buffers, entries)
+  val outputs  = to-tuple $ seq-cat(output-buffers, entries)
+
+  for input in inputs do : 
+    #EXPECT(not any?({buffer-id(_) == buffer-id(input)}, outputs))
+
+deftest unconnected-ports : 
+  val nodes = [ 
+    Node(1, [], [Port(11, AUDIO)], 0.0)
+    Node(2, [Port(21, AUDIO), Port(22, AUDIO)], [Port(23, AUDIO)], 0.0)
+  ]
+
+  val edges = [Edge(100, 1, 11, 2, 21)]
+  print-graphviz(nodes, edges)
+
+  val schedule = schedule(compile(1, nodes, edges))
+  #EXPECT(length(schedule) == 2)
+  val e1 = schedule[0]
+  val e2 = schedule[1]
+  
+  for entry in schedule do : 
+    match(entry:ScheduledNode) : 
+      val node    = find!({node-id(_) == node-id(entry)}, nodes)
+      val buffers = cat-all([input-buffers(entry), output-buffers(entry)])
+      val ports   = cat-all([inputs(node), outputs(node)])
+      for port in ports do : 
+        val buffer = find({port-id(_) == port-id(port)}, buffers)
+        #EXPECT(buffer is-not False)
+
+
+deftest delay-compensation : 
+  defn random-latency () :
+    to-double(rand(20)) - 10.0
+  
+  ;             *-----> 3 ----*
+  ;            /               \                     
+  ;   1 ------*                 *----> 6 ----*       
+  ;            \               /              \      
+  ;             * ----> 4 ----*                \     
+  ;            /                                *----> 7
+  ;   2 ------*                                /
+  ;            \                              /
+  ;             *-----> 5 -------------------*
+  val nodes = [
+    Node(1, [], [Port(11, AUDIO)], random-latency())
+    Node(2, [], [Port(21, AUDIO)], random-latency())
+    Node(3, [Port(31, AUDIO)], [Port(32, AUDIO)], random-latency())
+    Node(4, [Port(41, AUDIO)], [Port(42, AUDIO)], random-latency())
+    Node(5, [Port(51, AUDIO)], [Port(52, AUDIO)], random-latency())
+    Node(6, [Port(61, AUDIO)], [Port(62, AUDIO)], random-latency())
+    Node(7, [Port(71, AUDIO)], [], 0.0)
+  ]
+
+  val edges = [
+    Edge(100, 1, 11, 3, 31)
+    Edge(101, 1, 11, 4, 41)
+    Edge(102, 2, 21, 4, 41)
+    Edge(103, 2, 21, 5, 51)
+    Edge(104, 3, 32, 6, 61)
+    Edge(106, 4, 42, 6, 61)
+    Edge(107, 5, 52, 7, 71)
+    Edge(108, 6, 62, 7, 71)
+  ]
+
+  print-graphviz(nodes, edges)
+  val result  = compile(1, nodes, edges)
+  val num-buffers = num-buffers(result)[0][1]
+  
+  ; Instead of real data we're going to accumulate 
+  ; the delay passing through the network from input
+  ; to output 
+  val buffers = Array<Double>(num-buffers)
+  for n in 0 to num-buffers do : 
+    buffers[n] = 0.0
+  
+  ; Simulate the latency of the nodes and compensation
+  ; applied to them
+  for entry in schedule(result) do : 
+    match(entry) : 
+      (node:ScheduledNode) :
+        if length(input-buffers(node)) == length(output-buffers(node)) :
+          for (inpt in input-buffers(node), outp in output-buffers(node)) do : 
+            val acc = buffers[buffer-id $ inpt] + latency(node)
+            buffers[buffer-id $ outp] = acc
+        else : 
+          for outp in output-buffers(node) do : 
+            buffers[buffer-id $ outp] = latency(node)
+      (delay:InsertedDelay) : 
+        val acc = buffers[input-buffer(delay) as Int] + /delay(delay)
+        buffers[output-buffer(delay) as Int] = acc
+      (sum:InsertedSum) : 
+        ; Important check: summation nodes require all inputs to be in
+        ; phase. Here we check that the buffers at merge points are all
+        ; sync'd. 
+        #EXPECT(all-equal?(seq({buffers[_]}, input-buffers(sum))))
+        buffers[output-buffer(sum)] = buffers[input-buffers(sum)[0]]
+  
+  ; The last node evaluted is our sink, and it should also have the longest
+  ; delay time attached to it.
+  val sink = schedule(result)[length(schedule(result)) - 1] as ScheduledNode
+  #EXPECT(buffers[buffer-id $ input-buffers(sink)[0]] == maximum(buffers))
+
+defn all-equal? (s:Seqable<Equalable>) : 
+  val s* = to-seq(s)
+  if empty?(s*) : true
+  else : 
+    val v = next(s*)
+    all?({_ == v}, s*)
+  

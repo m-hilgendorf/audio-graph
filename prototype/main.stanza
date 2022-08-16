@@ -1,0 +1,392 @@
+defpackage audio-graph/main : 
+  import core
+  import collections
+
+; TODOS : 
+;
+; - Uphold preconditiong: valid edges passed into input
+;   a) src port must be output, dst port must be input
+;   b) src/dst ports must exist
+;   c) src/dst nodes must exist
+; 
+; - Uphold precondition: graph is acyclic
+; 
+
+;==============================================================================
+;=========================== Output Data ======================================
+;==============================================================================
+
+public deftype ScheduleEntry
+public defstruct ScheduledNode <: ScheduleEntry : 
+  node-id:Int
+  input-buffers:Tuple<BufferAssignment>
+  output-buffers:Tuple<BufferAssignment>
+  latency:Double  ; kept around for graphviz print
+with : 
+  printer => true
+
+public defstruct InsertedDelay <: ScheduleEntry : 
+  edge:Edge
+  delay:Double
+  input-buffer:False|Int with : 
+    default => false
+    updater => sub-input-buffer
+  output-buffer:False|Int with : 
+    default => false
+    updater => sub-output-buffer
+with : 
+  printer => true
+
+public defn edge-id (d:InsertedDelay) : 
+  edge-id(edge(d))
+
+public defstruct InsertedSum <: ScheduleEntry : 
+  input-buffers:Tuple<Int>
+  output-buffer:Int 
+with : 
+  printer => true
+
+public defstruct CompiledSchedule : 
+  schedule:Tuple<ScheduleEntry>
+  delays:Tuple<InsertedDelay>
+  num-buffers:Tuple<[Int, Int]>
+
+public defstruct BufferAssignment <: Equalable : 
+  buffer-id:Int
+  port-id:Int
+  should-clear:True|False
+  type:Int
+with : 
+  printer => true
+  equalable => true
+
+defn sub-buffers (delay:InsertedDelay, input:False|Int, output:False|Int) : 
+  delay 
+    $> sub-input-buffer{_, input}
+    $> sub-output-buffer{_, output}
+
+
+;==============================================================================
+;============================ Input Data ======================================
+;==============================================================================
+public defstruct Node : 
+  node-id:Int
+  inputs:Tuple<Port>
+  outputs:Tuple<Port>
+  latency:Double
+with : 
+  printer => true
+
+public defstruct Port : 
+  port-id:Int
+  type:Int
+with : 
+  printer => true
+
+public defstruct Edge : 
+  edge-id:Int
+  src-node:Int
+  src-port:Int
+  dst-node:Int
+  dst-port:Int
+with : 
+  printer => true
+
+;==============================================================================
+;================================= API ========================================
+;==============================================================================
+; Audio graph compiler driver
+;
+; Inputs: 
+; - num-port-types: The number of different port types we can expect.
+; - node-list:      A list of nodes in the graph, their ports, and latencies.
+; - edge-list:      A list of connections in the graph, from node.port to node.port.
+;
+; Output:
+; - CompiledSchdule with : 
+;   - order: topological order to evaluate nodes, delays, and summing points
+;   - inserted-delays: list of (possibly) updated 
+public defn compile (num-port-types:Int, 
+                     node-list:Tuple<Node>, 
+                     edge-list:Tuple<Edge>) -> CompiledSchedule : 
+  preprocess(num-port-types, node-list, edge-list) ; First, collect input IR into GraphIR structure 
+    $> sort-topologically                          ; Next, sort the graph topologically to create initial order
+    $> solve-latency-requirements                  ; Iterate the order, solving for latency requirements and insert delays
+    $> solve-buffer-requirements                   ; Iterate the order with delays, solving for buffer requirements and insert sums
+    $> merge                                       ; Merge the resulting data from the passes into the Result
+
+;==============================================================================
+;============================== Internals =====================================
+;==============================================================================
+; An internal IR that holds the data needed for the compiler passes.
+public defstruct GraphIR : 
+  nodes:IntTable<Node> ; table of nodes in the graph
+  edges:IntTable<Edge> ; table of edges in the graph
+  adjacent:IntTable<Vector<Edge>> ; table of adjacent edges to nodes
+  allocator:BufferAllocator       ; a buffer allocator object, initially empty
+  assigned-buffers:IntTable<BufferRef> with : ; a table of buffers assigned ot edges, initially empty
+    default => IntTable<BufferRef>()
+  node-order:Tuple<Node|ScheduleEntry> with : ; the topological order of the graph, initially empty
+    updater => sub-node-order
+    default => []
+
+; Returns adjacent nodes along outgoing edges from a node
+defn outgoing (g:GraphIR, node:Node) -> Seq<Node> : 
+  val edges = adjacent(g)[node-id(node)]
+  for edge in edges seq? : 
+    if src-node(edge) == node-id(node) :  
+      One(nodes(g)[dst-node(edge)])
+    else : 
+      None()
+
+; Returns adjacent nodes along incoming edges to a node
+defn incoming (g:GraphIR, node:Node) -> Seq<Node> : 
+  val edges = adjacent(g)[node-id(node)]
+  for edge in edges seq? : 
+    if dst-node(edge) == node-id(node) :  
+      One(nodes(g)[dst-node(edge)])
+    else : 
+      None()
+
+; Returns nodes with indegree 0, the roots of the graph
+defn roots  (g:GraphIR) -> Seq<Node> :
+  for node in values(nodes(g)) filter : 
+    empty?(incoming(g, node))
+
+public defstruct BufferRef : 
+  id:Int
+  type-id:Int
+  ref-count:Int with : 
+    default => 1
+    setter  => set-ref-count
+with : 
+  printer => true
+defn inc (b:BufferRef) : set-ref-count(b, ref-count(b) + 1)
+defn dec (b:BufferRef) : set-ref-count(b, ref-count(b) - 1)
+defn clone (b:BufferRef) -> BufferRef : 
+  inc(b)
+  b
+
+public deftype BufferAllocator 
+defmulti acquire (alloc:BufferAllocator, type-id:Int) -> BufferRef 
+defmulti release (alloc:BufferAllocator, ref:BufferRef) -> False
+defmulti max-num-buffers (alloc:BufferAllocator) -> Tuple<[Int, Int]>
+
+defn BufferAllocator (num-types:Int) : 
+  val free-lists = to-tuple(seq(Vector<Int>{}, 0 to num-types))
+  val counts     = to-array<Int>(seq({0}, 0 to num-types))
+
+  new BufferAllocator : 
+    defmethod print (o:OutputStream, this) : 
+      print(o, "BufferAllocator state:")
+      val oo = IndentedStream(o)
+      lnprint(oo, "- free-lists: %," % [free-lists])
+      lnprint(oo, "- counts: %," % [counts])
+
+    defmethod acquire (this, type-id:Int) : 
+      if empty?(free-lists[type-id]) : 
+        val id = counts[type-id] + 1
+        counts[type-id] = id
+        BufferRef(id, type-id)
+      else : 
+        val id = pop(free-lists[type-id])
+        BufferRef(id, type-id)
+    defmethod release (this, ref:BufferRef) : 
+      dec(ref)
+      if ref-count(ref) == 0 : 
+        add(free-lists[type-id(ref)], id(ref))
+    defmethod max-num-buffers (this) : 
+      to-tuple $ 
+        for (count in counts, type in 0 to num-types) seq : 
+          [type, count + 1]
+
+;==============================================================================
+;=============================== Passes =======================================
+;==============================================================================
+; "Preprocess" the input to the compiler, initializing the GraphIR
+defn preprocess (num-port-types:Int, node-list:Tuple<Node>, edge-list:Tuple<Edge>) -> GraphIR : 
+  GraphIR(nodes, edges, adjacent, allocator) where : 
+    val nodes     = to-inttable<Node>(seq({node-id(_0) => _0}, node-list))
+    val edges     = to-inttable<Edge>(seq({edge-id(_0) => _0}, edge-list))
+    val adjacent  = IntTable-init<Vector<Edge>>({Vector<Edge>()})
+    val allocator = BufferAllocator(num-port-types)
+    for edge in values(edges) do : 
+      add(adjacent[src-node(edge)], edge)
+      add(adjacent[dst-node(edge)], edge)
+
+; DFS walk of the graph to initialize the node-order, sorting the graph 
+; topologically. Fails if there are cycles in the input.
+defn sort-topologically (g:GraphIR) -> GraphIR :
+  ; First, we check for cycles in the graph.
+  defn cycle-check (node:Node) :
+    ; blah blah blah, do it efficiently via Tarjan's algorithm or something
+    defn visit (node:Node, check:Node) : 
+      fatal("Cycle detected") when node-id(node) == node-id(check)
+      do(visit{_, check}, outgoing(g, node))
+    do(visit{_, node}, outgoing(g, node))
+  do(cycle-check, roots(g))
+
+  val node-order = Vector<Node>()
+  val visited    = HashSet<Int>()
+  val queue      = Queue<Node>()
+  do(add{queue, _}, roots(g))
+  
+  let loop () : 
+    if not empty?(queue) : 
+      val node = pop(queue) 
+      if not visited[node-id(node)] :
+        add(visited, node-id(node))
+        do(add{queue, _}, outgoing(g, node))
+        add(node-order, node)
+      loop()
+  val node-order* = to-tuple(node-order)
+  sub-node-order(g, node-order*)
+
+; Solves the latency requirements of the graph, by computing how 
+; much delay is required at edges and then inserting delays into
+; the node-order.
+;
+defn solve-latency-requirements (g:GraphIR) -> GraphIR : 
+  sub-node-order(g, order) where : 
+    val time-of-arrival = HashTable<Int, Double>()
+    val order = to-tuple $ 
+      for entry in node-order(g) seq-cat :
+        val node = entry as Node 
+        val incoming-edges  = filter({dst-node(_) == node-id(node)}, adjacent(g)[node-id(node)])
+        val input-latencies = to-tuple $ 
+          for incoming-edge in incoming-edges seq : 
+            incoming-edge => time-of-arrival[src-node(incoming-edge)]
+        val max-input-latency = maximum(seq(value, input-latencies)) when not empty?(input-latencies) else 0.0
+        val delays = 
+          for kv in input-latencies seq? : 
+            val delay = max-input-latency - value(kv)
+            if delay != 0.0 : One $
+              InsertedDelay(edge, delay) where : 
+                val edge = key(kv)
+                val delay   = max-input-latency - value(kv)
+            else : 
+              None()
+        time-of-arrival[node-id(node)] = max-input-latency + latency(node)
+        cat-all([delays, [node]])
+
+defn solve-buffer-requirements (g:GraphIR) -> GraphIR : 
+  sub-node-order(g, order) where : 
+    val order = to-tuple $ 
+    for entry in node-order(g) seq-cat : 
+      match(entry) : 
+        (node:Node) : 
+          val [scheduled-node, sums] = assign-buffers(g, node)
+          cat-all([sums, [scheduled-node]])
+        (delay:InsertedDelay) : 
+          [assign-buffers(g, delay)]
+
+defn merge (g:GraphIR) -> CompiledSchedule : 
+  CompiledSchedule(order, delays, num-buffers) where : 
+    val order  = map({_ as ScheduleEntry} node-order(g))
+    val delays = to-tuple(filter-by<InsertedDelay>(order))
+    val num-buffers = max-num-buffers(allocator(g))
+  
+; Buffer assignment for a single node in the graph.
+; 
+; Input : 
+;   - A node to assign i/o buffers
+;   - A list of edges connected to the node
+; State : 
+;   - A list of allocator stacks, one for each type of port in the node
+;   - A table of (edge-id) => (buffer-id). 
+; Output : 
+;   - A list of buffers that have been assigned to the node
+;   - A list of summation/merge points to add to the schedule
+;
+; Behavior : 
+;   - Every input and output port has exactly one buffer assigned to it
+;   - Output ports connected to an edge share the same buffer as that edge
+;   - If an input port has exactly one incoming edge, it shares a buffer 
+;     with the incoming edge (and therefore, the output port of the edge)
+;   - If an input port is connected to multiple edges, a sum/merge point
+;     is created and returned. This point has a list of buffers to merge,
+;     and an output buffer that is shared with the corresponding input port.
+;   - A best-effort is given to minimize the number of buffers needed
+defn assign-buffers (g:GraphIR, node:Node) -> [ScheduledNode, Seqable<InsertedSum>] :
+  [scheduled-node, summing-nodes] where : 
+    val edges = adjacent(g)[node-id(node)]
+
+    ; Collections to hold the output that is constructed incrementally
+    val summing-nodes  = Vector<InsertedSum>()
+    val input-buffers  = Vector<BufferAssignment>()
+    val output-buffers = Vector<BufferAssignment>()
+
+    ; First, collect the input/output ports.
+    ;
+    ; Order matters! Outputs should be traversed before inputs in order
+    ; to minimize the number of buffers allocated.
+    val io = cat-all([
+      seq({[_, false]}, outputs(node))
+      seq({[_, true]},  inputs(node)), 
+    ])
+
+    ; Iterate the list of ports
+    for [port, is-input?] in io do : 
+      val port-id = port-id(port)
+      val type    = type(port)
+      val edges*  = to-tuple $ 
+        for edge in edges filter :
+          contains?([dst-port(edge), src-port(edge)], port-id) 
+      val buffer-assignments = input-buffers when is-input? else output-buffers
+      
+      ; Case 1: The port is unconnected. Acquire a buffer, and immediately release it.
+      if empty?(edges*) : 
+        add(buffer-assignments, BufferAssignment(buffer-id, port-id, should-clear?, type)) where : 
+          val buffer        = acquire(allocator(g), type)
+          val should-clear? = true
+          val buffer-id     = id(buffer)
+          release(allocator(g), buffer)
+      
+      ; Case 2: The port is an input, and has exactly one incoming edge. Lookup the corresponding
+      ;         buffer, and release it.
+      else if length(edges*) == 1 and is-input? : 
+        add(buffer-assignments, BufferAssignment(buffer-id, port-id, should-clear?, type)) where : 
+          val buffer        = assigned-buffers(g)[edge-id(edges*[0])]
+          val buffer-id     = id(buffer)
+          val should-clear? = false
+          release(allocator(g), buffer)
+      
+      ; Case 3: The port is an output. Acquire a buffer, and add to the assignment table with 
+      ;         any corresponding edge ids.
+      else if not is-input? :
+        add(buffer-assignments, BufferAssignment(buffer-id, port-id, should-clear?, type)) where : 
+          val buffer        = acquire(allocator(g), type)
+          val should-clear? = true
+          val buffer-id     = id(buffer)
+          dec(buffer)
+          for edge in edges* do : 
+            assigned-buffers(g)[edge-id(edge)] = clone(buffer)
+
+      ; Case 4: The port is an input with multiple incoming edges. Compute the summing point 
+      ;         and map the input buffer assignment to the output of the summing point.
+      else : 
+        val sum-output    = acquire(allocator(g), type)
+        val sum-inputs    = map(get{assigned-buffers(g), edge-id(_)}, edges*)
+        val summing-point = InsertedSum(map(id, sum-inputs), id(sum-output))
+
+        add(summing-nodes, summing-point)
+        add(buffer-assignments, BufferAssignment(buffer-id, port-id, should-clear?, type)) where : 
+          val buffer-id     = id(sum-output)
+          val should-clear? = false
+          release(allocator(g), sum-output)
+
+    val scheduled-node = ScheduledNode(node-id(node), to-tuple(input-buffers), to-tuple(output-buffers), latency(node))
+
+defn assign-buffers (graph:GraphIR, 
+                     delay:InsertedDelay) -> InsertedDelay :
+  sub-buffers(delay, input-buffer, output-buffer) where : 
+    val edge = edges(graph)[edge-id(delay)]
+    val node = nodes(graph)[dst-node(edge)]
+    val type = type(find!({port-id(_) == dst-port(edge)}, inputs(node)))
+    val input-buffer-ref  = assigned-buffers(graph)[edge-id(delay)]
+    val output-buffer-ref = acquire(allocator(graph), type)
+    assigned-buffers(graph)[edge-id(delay)] = output-buffer-ref
+    release(allocator(graph), output-buffer-ref)
+    release(allocator(graph), input-buffer-ref)
+    val input-buffer  = id(input-buffer-ref)
+    val output-buffer = id(output-buffer-ref)

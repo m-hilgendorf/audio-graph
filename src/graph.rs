@@ -56,12 +56,12 @@ impl From<PortRef> for usize {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Edge<P> {
-    pub src_node: NodeRef,
-    pub src_port: PortRef,
-    pub dst_node: NodeRef,
-    pub dst_port: PortRef,
-    pub port_type: P,
+struct Edge<P> {
+    src_node: NodeRef,
+    src_port: PortRef,
+    dst_node: NodeRef,
+    dst_port: PortRef,
+    _type_: P,
 }
 
 impl<P> PartialEq for Edge<P>
@@ -213,7 +213,7 @@ where
             src_port: src,
             dst_node,
             dst_port: dst,
-            port_type: src_type,
+            _type_: src_type,
         };
 
         self.edges[src_node.0].push(edge);
@@ -233,7 +233,7 @@ where
             src_port: src,
             dst_node,
             dst_port: dst,
-            port_type,
+            _type_: type_,
         })
     }
 
