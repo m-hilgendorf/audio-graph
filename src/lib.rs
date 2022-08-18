@@ -1,8 +1,12 @@
 #![allow(clippy::type_complexity)]
 mod buffer_allocator;
+pub mod graph_helper;
 pub mod graph_ir;
 pub mod input_ir;
 pub mod output_ir;
+
+pub use input_ir::*;
+pub use output_ir::*;
 
 /*
 #[cfg(test)]

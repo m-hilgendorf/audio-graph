@@ -18,6 +18,11 @@ pub struct PortID(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EdgeID(pub u64);
 
+/// The index of the port/buffer type.
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypeIdx(pub usize);
+
 /// The input IR used by the audio graph compiler.  
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug)]
@@ -53,7 +58,7 @@ pub struct Port {
     pub id: PortID,
     /// A unique identifier for the type of data this port handles,
     /// for example nodes may have audio and event ports.
-    pub type_idx: usize,
+    pub type_idx: TypeIdx,
 }
 
 /// An [Edge] is a connection from source node and port to a

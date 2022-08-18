@@ -28,14 +28,16 @@ use std::rc::Rc;
 #[cfg(feature = "serialize")]
 use serde::{Deserialize, Serialize};
 
+use crate::{BufferIdx, TypeIdx};
+
 /// A reference to an abstract buffer during buffer allocation.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Copy, Clone, Debug)]
 pub struct BufferRef {
     /// The index of the buffer
-    pub idx: usize,
+    pub idx: BufferIdx,
     /// The type index of the buffer
-    pub type_idx: usize,
+    pub type_idx: TypeIdx,
     /// The generation, or the nth time this buffer has
     /// been assigned to a different edge in the graph.
     pub generation: usize,
@@ -43,7 +45,7 @@ pub struct BufferRef {
 
 impl BufferRef {
     /// Create a new BufferRef
-    pub fn new(idx: usize, type_idx: usize, generation: usize) -> Self {
+    pub fn new(idx: BufferIdx, type_idx: TypeIdx, generation: usize) -> Self {
         Self {
             idx,
             type_idx,
@@ -68,7 +70,7 @@ pub struct BufferAllocator {
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug)]
 pub struct FreeListEntry {
-    pub idx: usize,
+    pub idx: BufferIdx,
     pub generation: usize,
 }
 
@@ -84,11 +86,14 @@ impl BufferAllocator {
 
     /// Acquire a new buffer with a given type index. Panics if
     /// the type index is out of bounds.
-    pub fn acquire(&mut self, type_idx: usize) -> Rc<BufferRef> {
-        let entry = self.free_lists[type_idx].pop().unwrap_or_else(|| {
-            let idx = self.counts[type_idx] + 1;
-            self.counts[type_idx] = idx;
-            FreeListEntry { idx, generation: 0 }
+    pub fn acquire(&mut self, type_idx: TypeIdx) -> Rc<BufferRef> {
+        let entry = self.free_lists[type_idx.0].pop().unwrap_or_else(|| {
+            let idx = self.counts[type_idx.0] + 1;
+            self.counts[type_idx.0] = idx;
+            FreeListEntry {
+                idx: BufferIdx(idx),
+                generation: 0,
+            }
         });
         Rc::new(BufferRef::new(entry.idx, type_idx, entry.generation))
     }
@@ -96,7 +101,7 @@ impl BufferAllocator {
     /// Release a BufferRef.
     pub fn release(&mut self, buffer_ref: Rc<BufferRef>) {
         if Rc::strong_count(&buffer_ref) == 1 {
-            self.free_lists[buffer_ref.type_idx].push(FreeListEntry {
+            self.free_lists[buffer_ref.type_idx.0].push(FreeListEntry {
                 idx: buffer_ref.idx,
                 generation: buffer_ref.generation + 1,
             });

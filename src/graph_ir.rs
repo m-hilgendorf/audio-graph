@@ -76,6 +76,9 @@ pub fn compile(
     nodes: impl IntoIterator<Item = Node>,
     edges: impl IntoIterator<Item = Edge>,
 ) -> CompiledSchedule {
+    let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
+    let edges: FnvHashMap<EdgeID, Edge> = edges.into_iter().map(|e| (e.id, e)).collect();
+
     GraphIR::preprocess(num_port_types, nodes, edges)
         .sort_topologically()
         .solve_latency_requirements()
@@ -88,11 +91,9 @@ impl GraphIR {
     /// up the adjacency table and creating an empty schedule.
     pub fn preprocess(
         num_port_types: usize,
-        nodes: impl IntoIterator<Item = Node>,
-        edges: impl IntoIterator<Item = Edge>,
+        nodes: FnvHashMap<NodeID, Node>,
+        edges: FnvHashMap<EdgeID, Edge>,
     ) -> Self {
-        let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
-        let edges: FnvHashMap<EdgeID, Edge> = edges.into_iter().map(|e| (e.id, e)).collect();
         let mut adjacent = FnvHashMap::default();
         for edge in edges.values() {
             let src = adjacent.entry(edge.src_node).or_insert_with(Vec::new);

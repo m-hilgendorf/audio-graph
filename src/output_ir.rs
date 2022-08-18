@@ -1,9 +1,14 @@
 //! Output data structures from the audio graph compiler.
 
-use crate::input_ir::{Edge, NodeID, PortID};
+use crate::input_ir::{Edge, NodeID, PortID, TypeIdx};
 
 #[cfg(feature = "serialize")]
 use serde::{Deserialize, Serialize};
+
+/// The index of the buffer.
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferIdx(pub usize);
 
 /// A [CompiledSchedule] is the output of the graph compiler.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
@@ -81,9 +86,9 @@ pub struct InsertedSum {
 #[derive(Copy, Clone, Debug)]
 pub struct BufferAssignment {
     /// The index of the buffer assigned
-    pub buffer_index: usize,
+    pub buffer_index: BufferIdx,
     /// The index of the type of data in this buffer
-    pub type_index: usize,
+    pub type_index: TypeIdx,
     /// Whether the engine should clear the buffer before
     /// passing it to a process
     pub should_clear: bool,
