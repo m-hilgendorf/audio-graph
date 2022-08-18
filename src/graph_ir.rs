@@ -1,26 +1,29 @@
 //! The internal [GraphIR] datastructure used by the compiler passes.
 //!
 use crate::{
-    buffer_allocator2::{BufferAllocator, BufferRef},
+    buffer_allocator::{BufferAllocator, BufferRef},
     input_ir::*,
     output_ir::*,
 };
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use fnv::{FnvHashMap, FnvHashSet};
 use std::rc::Rc;
+
+#[cfg(feature = "serialize")]
+use serde::{Deserialize, Serialize};
 
 /// Internal IR used by the compiler algorithm. Built incrementally
 /// via the compiler passes.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug)]
 pub struct GraphIR {
     /// The number of port types used by the graph.
     pub num_port_types: usize,
     /// A table of nodes in the graph.
-    pub nodes: HashMap<u64, Node>,
+    pub nodes: FnvHashMap<NodeID, Node>,
     /// A list of edges in the graph.
-    pub edges: HashMap<u64, Edge>,
+    pub edges: FnvHashMap<EdgeID, Edge>,
     /// Adjacency list table. Built internally.
-    pub adjacent: HashMap<u64, Vec<Edge>>,
+    pub adjacent: FnvHashMap<NodeID, Vec<Edge>>,
     /// The topologically sorted schedule of the graph. Built internally.
     pub schedule: Vec<TempEntry>,
     /// The maximum number of buffers used for each port type. Built internally.
@@ -29,7 +32,8 @@ pub struct GraphIR {
 
 /// An entry in the schedule order. Since it is built incrementally, it
 /// is not equivalent to a [ScheduledNode].
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug)]
 pub enum TempEntry {
     /// A node in the order that has not been completely scheduled yet.
     Node(Node),
@@ -53,7 +57,8 @@ impl TempEntry {
 
 /// A delay that has been inserted into the order but has
 /// not yet been assigned i/o buffers.
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Copy, Clone, Debug)]
 pub struct TempDelay {
     /// The edge that this delay corresponds to. Kept for debugging and visualization.
     pub edge: Edge,
@@ -87,8 +92,8 @@ impl GraphIR {
         edges: impl IntoIterator<Item = Edge>,
     ) -> Self {
         let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
-        let edges: HashMap<u64, Edge> = edges.into_iter().map(|e| (e.id, e)).collect();
-        let mut adjacent = HashMap::new();
+        let edges: FnvHashMap<EdgeID, Edge> = edges.into_iter().map(|e| (e.id, e)).collect();
+        let mut adjacent = FnvHashMap::default();
         for edge in edges.values() {
             let src = adjacent.entry(edge.src_node).or_insert_with(Vec::new);
             src.push(*edge);
@@ -109,7 +114,8 @@ impl GraphIR {
     pub fn sort_topologically(mut self) -> Self {
         debug_assert!(self.tarjan() == 0, "Graph contains cycles.");
         let mut stack = self.roots().cloned().collect::<Vec<_>>();
-        let mut visited = HashSet::with_capacity(self.nodes.len());
+        let mut visited = FnvHashSet::default();
+        visited.reserve(self.nodes.len());
 
         self.schedule.clear();
 
@@ -127,7 +133,7 @@ impl GraphIR {
     }
 
     pub fn solve_latency_requirements(mut self) -> Self {
-        let mut time_of_arrival = HashMap::new();
+        let mut time_of_arrival = FnvHashMap::default();
         let mut new_schedule = Vec::with_capacity(self.schedule.capacity());
         for entry in self.schedule {
             let entry = entry.node(); // cast to a node
@@ -169,7 +175,7 @@ impl GraphIR {
     pub fn solve_buffer_requirements(mut self) -> Self {
         let mut new_schedule = Vec::with_capacity(self.schedule.capacity());
         let mut allocator = BufferAllocator::new(self.num_port_types);
-        let mut assignment_table = HashMap::new();
+        let mut assignment_table = FnvHashMap::default();
 
         // hack to get around the borrow checker. This is sound because we do not mutate
         // the schedule internally, but keep the shared state bundled in the same data structure.
@@ -202,7 +208,7 @@ impl GraphIR {
         &self,
         node: &Node,
         allocator: &mut BufferAllocator,
-        assignment_table: &mut HashMap<u64, Rc<BufferRef>>,
+        assignment_table: &mut FnvHashMap<EdgeID, Rc<BufferRef>>,
     ) -> (ScheduledNode, impl Iterator<Item = InsertedSum>) {
         // Allocate our output data structures, any summing nodes that need to
         // be inserted, the input buffers, and the output buffers.
@@ -327,7 +333,7 @@ impl GraphIR {
         &self,
         mut delay: TempDelay,
         allocator: &mut BufferAllocator,
-        assignment_table: &mut HashMap<u64, Rc<BufferRef>>,
+        assignment_table: &mut FnvHashMap<EdgeID, Rc<BufferRef>>,
     ) -> TempDelay {
         let input_buffer = assignment_table
             .remove(&delay.edge.id)
@@ -461,7 +467,7 @@ impl GraphIR {
     pub fn tarjan(&self) -> usize {
         let mut index = 0;
         let mut stack = Vec::with_capacity(self.nodes.len());
-        let mut aux: HashMap<u64, TarjanData> = self
+        let mut aux: FnvHashMap<NodeID, TarjanData> = self
             .nodes
             .iter()
             .map(|(k, _)| (*k, TarjanData::default()))
@@ -470,7 +476,7 @@ impl GraphIR {
         let mut num_cycles = 0;
         fn strong_connect<'a>(
             graph: &'a GraphIR,
-            aux: &mut HashMap<u64, TarjanData>,
+            aux: &mut FnvHashMap<NodeID, TarjanData>,
             node: &'a Node,
             index: &mut u64,
             stack: &mut Vec<&'a Node>,

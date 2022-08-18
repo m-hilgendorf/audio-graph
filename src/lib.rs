@@ -1,21 +1,10 @@
 #![allow(clippy::type_complexity)]
 mod buffer_allocator;
-mod buffer_allocator2;
-mod cache;
-mod error;
-mod graph;
 pub mod graph_ir;
 pub mod input_ir;
 pub mod output_ir;
-mod port_type;
-mod scheduled;
-mod vec;
 
-pub use error::Error;
-pub use graph::{Graph, NodeRef, PortRef};
-pub use port_type::{DefaultPortType, PortType};
-pub use scheduled::{DelayCompInfo, ScheduledNode};
-
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,3 +127,4 @@ mod tests {
         assert!(matches!(last_node, Some("D")));
     }
 }
+*/

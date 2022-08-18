@@ -1,9 +1,26 @@
 //! Input data structures to the audio graph compiler.
-//!
+
+#[cfg(feature = "serialize")]
 use serde::{Deserialize, Serialize};
 
+/// A globally unique identifier for a [Node].
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeID(pub u64);
+
+/// A globally unique identifier for a [Port].
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PortID(pub u64);
+
+/// A globally unique identifier for an [Edge].
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EdgeID(pub u64);
+
 /// The input IR used by the audio graph compiler.  
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug)]
 pub struct AudioGraphCompilerInput {
     /// A list of nodes in the graph.
     pub nodes: Vec<Node>,
@@ -14,10 +31,11 @@ pub struct AudioGraphCompilerInput {
 }
 
 /// A [Node] is a single process in the audio network.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug)]
 pub struct Node {
     /// A globally unique identifier of the node.
-    pub id: u64,
+    pub id: NodeID,
     /// A list of input ports used by the node
     pub inputs: Vec<Port>,
     /// A list of output ports used by the node.
@@ -28,11 +46,11 @@ pub struct Node {
 
 /// A [Port] is a single point of input or output data
 /// for a node.
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Copy, Clone, Debug)]
 pub struct Port {
-    /// A globally unique identifier of this port. Note: do not
-    /// mix IDs for ports with IDs for nodes and edges.
-    pub id: u64,
+    /// A globally unique identifier of this port.
+    pub id: PortID,
     /// A unique identifier for the type of data this port handles,
     /// for example nodes may have audio and event ports.
     pub type_idx: usize,
@@ -40,17 +58,17 @@ pub struct Port {
 
 /// An [Edge] is a connection from source node and port to a
 /// destination node and port.
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Edge {
-    /// A globally unique identifier for this connection. Note: do
-    /// not mix IDs for edges with IDs for nodes or ports.
-    pub id: u64,
+    /// A globally unique identifier for this connection.
+    pub id: EdgeID,
     /// The ID of the source node of this edge.
-    pub src_node: u64,
+    pub src_node: NodeID,
     /// The ID of the source port used by this edge.
-    pub src_port: u64,
+    pub src_port: PortID,
     /// The ID of the destination of this edge.
-    pub dst_node: u64,
+    pub dst_node: NodeID,
     /// The ID of the destination port used by this edge.
-    pub dst_port: u64,
+    pub dst_port: PortID,
 }
