@@ -88,8 +88,8 @@ impl BufferAllocator {
     /// the type index is out of bounds.
     pub fn acquire(&mut self, type_idx: TypeIdx) -> Rc<BufferRef> {
         let entry = self.free_lists[type_idx.0].pop().unwrap_or_else(|| {
-            let idx = self.counts[type_idx.0] + 1;
-            self.counts[type_idx.0] = idx;
+            let idx = self.counts[type_idx.0];
+            self.counts[type_idx.0] = idx + 1;
             FreeListEntry {
                 idx: BufferIdx(idx),
                 generation: 0,
@@ -108,11 +108,9 @@ impl BufferAllocator {
         }
     }
 
-    /*
     /// Consume the allocator to return the maximum number of buffers used
     /// for each type.
     pub fn num_buffers_per_type(self) -> Vec<usize> {
         self.counts
     }
-    */
 }

@@ -200,6 +200,7 @@ impl GraphIR {
         }
 
         self.schedule = new_schedule;
+        self.max_num_buffers = allocator.num_buffers_per_type();
         self
     }
 
