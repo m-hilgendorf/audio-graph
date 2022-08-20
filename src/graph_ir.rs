@@ -76,6 +76,9 @@ pub fn compile(
     nodes: impl IntoIterator<Item = Node>,
     edges: impl IntoIterator<Item = Edge>,
 ) -> CompiledSchedule {
+    let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
+    let edges: FnvHashMap<EdgeID, Edge> = edges.into_iter().map(|e| (e.id, e)).collect();
+
     GraphIR::preprocess(num_port_types, nodes, edges)
         .sort_topologically()
         .solve_latency_requirements()
@@ -88,17 +91,14 @@ impl GraphIR {
     /// up the adjacency table and creating an empty schedule.
     pub fn preprocess(
         num_port_types: usize,
-        nodes: impl IntoIterator<Item = Node>,
-        edges: impl IntoIterator<Item = Edge>,
+        nodes: FnvHashMap<NodeID, Node>,
+        edges: FnvHashMap<EdgeID, Edge>,
     ) -> Self {
-        let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
-        let edges: FnvHashMap<EdgeID, Edge> = edges.into_iter().map(|e| (e.id, e)).collect();
-
         let mut adjacent = FnvHashMap::default();
         for edge in edges.values() {
-            let src = adjacent.entry(edge.src_port.node).or_insert_with(Vec::new);
+            let src = adjacent.entry(edge.src_node).or_insert_with(Vec::new);
             src.push(*edge);
-            let dst = adjacent.entry(edge.dst_port.node).or_insert_with(Vec::new);
+            let dst = adjacent.entry(edge.dst_node).or_insert_with(Vec::new);
             dst.push(*edge);
         }
 
@@ -141,10 +141,10 @@ impl GraphIR {
             let entry = entry.node(); // cast to a node
             let incoming_edges = self.adjacent[&entry.id]
                 .iter()
-                .filter(|edge| edge.dst_port.node == entry.id);
+                .filter(|edge| edge.dst_node == entry.id);
             let input_latencies = incoming_edges
                 .map(|edge| {
-                    let node = edge.src_port.node;
+                    let node = edge.src_node;
                     (edge, time_of_arrival[&node])
                 })
                 .collect::<Vec<_>>();
@@ -418,8 +418,8 @@ impl GraphIR {
     /// List the adjacent nodes along outgoing edges of `n`.
     pub fn outgoing<'a>(&'a self, n: &'a Node) -> impl Iterator<Item = &'a Node> + 'a {
         self.adjacent[&n.id].iter().filter_map(move |e| {
-            if e.src_port.node == n.id {
-                Some(&self.nodes[&e.dst_port.node])
+            if e.src_node == n.id {
+                Some(&self.nodes[&e.dst_node])
             } else {
                 None
             }
@@ -429,8 +429,8 @@ impl GraphIR {
     /// List the adjacent nodes along incoming edges of `n`.
     pub fn incoming<'a>(&'a self, n: &'a Node) -> impl Iterator<Item = &'a Node> + 'a {
         self.adjacent[&n.id].iter().filter_map(move |e| {
-            if e.dst_port.node == n.id {
-                Some(&self.nodes[&e.src_port.node])
+            if e.dst_node == n.id {
+                Some(&self.nodes[&e.src_node])
             } else {
                 None
             }

@@ -1,5 +1,7 @@
 //! Output data structures from the audio graph compiler.
 
+use std::hash::Hash;
+
 use crate::input_ir::{Edge, NodeID, PortID, TypeIdx};
 
 #[cfg(feature = "serialize")]
@@ -7,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// The index of the buffer.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BufferIdx(pub usize);
 
 /// A [CompiledSchedule] is the output of the graph compiler.
@@ -98,4 +100,15 @@ pub struct BufferAssignment {
     /// how many times this buffer has been used before
     /// this assignment. Kept for debugging and visualization.
     pub generation: usize,
+}
+
+impl From<usize> for BufferIdx {
+    fn from(i: usize) -> Self {
+        BufferIdx(i)
+    }
+}
+impl From<BufferIdx> for usize {
+    fn from(i: BufferIdx) -> Self {
+        i.0
+    }
 }

@@ -108,9 +108,11 @@ impl BufferAllocator {
         }
     }
 
+    /*
     /// Consume the allocator to return the maximum number of buffers used
     /// for each type.
     pub fn num_buffers_per_type(self) -> Vec<usize> {
         self.counts
     }
+    */
 }

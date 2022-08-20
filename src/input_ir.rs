@@ -8,26 +8,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeID(pub u64);
 
-/// A globally unique identifier for a [Port].
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PortID {
-    /// The ID of the [Node] this [Port] belongs to.
-    pub node: NodeID,
-
-    /// The (stable) ID for this [Port] on this [Node].
-    ///
-    /// This does not need to be a globally unique identifier,
-    /// just unique to the [Node] it belongs to.
-    pub stable_id: PortStableID,
-}
-
-/// The (stable) ID for a [Port] on a particular [Node].
+/// The ID for a [Port] on a particular [Node].
 ///
 /// This does not need to be a globally unique identifier,
 /// just unique to the [Node] it belongs to.
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PortStableID(pub u32);
+pub struct PortID(pub u32);
 
 /// A globally unique identifier for an [Edge].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
@@ -39,7 +26,8 @@ pub struct EdgeID(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypeIdx(pub usize);
 
-/// The input IR used by the audio graph compiler.  
+/*
+/// The input IR used by the audio graph compiler.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug)]
 pub struct AudioGraphCompilerInput {
@@ -50,6 +38,7 @@ pub struct AudioGraphCompilerInput {
     /// The number of different port types used by the graph.
     pub num_port_types: usize,
 }
+*/
 
 /// A [Node] is a single process in the audio network.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
@@ -84,8 +73,56 @@ pub struct Port {
 pub struct Edge {
     /// A globally unique identifier for this connection.
     pub id: EdgeID,
+    /// The ID of the source node used by this edge.
+    pub src_node: NodeID,
     /// The ID of the source port used by this edge.
     pub src_port: PortID,
+    /// The ID of the destination node used by this edge.
+    pub dst_node: NodeID,
     /// The ID of the destination port used by this edge.
     pub dst_port: PortID,
+}
+
+impl From<u64> for NodeID {
+    fn from(i: u64) -> Self {
+        NodeID(i)
+    }
+}
+impl From<NodeID> for u64 {
+    fn from(i: NodeID) -> Self {
+        i.0
+    }
+}
+
+impl From<u32> for PortID {
+    fn from(i: u32) -> Self {
+        PortID(i)
+    }
+}
+impl From<PortID> for u32 {
+    fn from(i: PortID) -> Self {
+        i.0
+    }
+}
+
+impl From<u64> for EdgeID {
+    fn from(i: u64) -> Self {
+        EdgeID(i)
+    }
+}
+impl From<EdgeID> for u64 {
+    fn from(i: EdgeID) -> Self {
+        i.0
+    }
+}
+
+impl From<usize> for TypeIdx {
+    fn from(i: usize) -> Self {
+        TypeIdx(i)
+    }
+}
+impl From<TypeIdx> for usize {
+    fn from(i: TypeIdx) -> Self {
+        i.0
+    }
 }
