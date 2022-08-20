@@ -11,7 +11,23 @@ pub struct NodeID(pub u64);
 /// A globally unique identifier for a [Port].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PortID(pub u64);
+pub struct PortID {
+    /// The ID of the [Node] this [Port] belongs to.
+    pub node: NodeID,
+
+    /// The (stable) ID for this [Port] on this [Node].
+    ///
+    /// This does not need to be a globally unique identifier,
+    /// just unique to the [Node] it belongs to.
+    pub stable_id: PortStableID,
+}
+
+/// The (stable) ID for a [Port] on a particular [Node].
+///
+/// This does not need to be a globally unique identifier,
+/// just unique to the [Node] it belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PortStableID(pub u32);
 
 /// A globally unique identifier for an [Edge].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
@@ -68,12 +84,8 @@ pub struct Port {
 pub struct Edge {
     /// A globally unique identifier for this connection.
     pub id: EdgeID,
-    /// The ID of the source node of this edge.
-    pub src_node: NodeID,
     /// The ID of the source port used by this edge.
     pub src_port: PortID,
-    /// The ID of the destination of this edge.
-    pub dst_node: NodeID,
     /// The ID of the destination port used by this edge.
     pub dst_port: PortID,
 }

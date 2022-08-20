@@ -76,9 +76,6 @@ pub fn compile(
     nodes: impl IntoIterator<Item = Node>,
     edges: impl IntoIterator<Item = Edge>,
 ) -> CompiledSchedule {
-    let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
-    let edges: FnvHashMap<EdgeID, Edge> = edges.into_iter().map(|e| (e.id, e)).collect();
-
     GraphIR::preprocess(num_port_types, nodes, edges)
         .sort_topologically()
         .solve_latency_requirements()
@@ -91,16 +88,20 @@ impl GraphIR {
     /// up the adjacency table and creating an empty schedule.
     pub fn preprocess(
         num_port_types: usize,
-        nodes: FnvHashMap<NodeID, Node>,
-        edges: FnvHashMap<EdgeID, Edge>,
+        nodes: impl IntoIterator<Item = Node>,
+        edges: impl IntoIterator<Item = Edge>,
     ) -> Self {
+        let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
+        let edges: FnvHashMap<EdgeID, Edge> = edges.into_iter().map(|e| (e.id, e)).collect();
+
         let mut adjacent = FnvHashMap::default();
         for edge in edges.values() {
-            let src = adjacent.entry(edge.src_node).or_insert_with(Vec::new);
+            let src = adjacent.entry(edge.src_port.node).or_insert_with(Vec::new);
             src.push(*edge);
-            let dst = adjacent.entry(edge.dst_node).or_insert_with(Vec::new);
+            let dst = adjacent.entry(edge.dst_port.node).or_insert_with(Vec::new);
             dst.push(*edge);
         }
+
         Self {
             num_port_types,
             nodes,
@@ -140,10 +141,10 @@ impl GraphIR {
             let entry = entry.node(); // cast to a node
             let incoming_edges = self.adjacent[&entry.id]
                 .iter()
-                .filter(|edge| edge.dst_node == entry.id);
+                .filter(|edge| edge.dst_port.node == entry.id);
             let input_latencies = incoming_edges
                 .map(|edge| {
-                    let node = edge.src_node;
+                    let node = edge.src_port.node;
                     (edge, time_of_arrival[&node])
                 })
                 .collect::<Vec<_>>();
@@ -242,7 +243,6 @@ impl GraphIR {
                     generation: buffer.generation,
                     type_index: buffer.type_idx,
                     port_id: port.id,
-                    node_id: node.id,
                     should_clear: true,
                 });
                 allocator.release(buffer);
@@ -257,7 +257,6 @@ impl GraphIR {
                     type_index: buffer.type_idx,
                     generation: buffer.generation,
                     port_id: port.id,
-                    node_id: node.id,
                     should_clear: false,
                 });
                 allocator.release(buffer);
@@ -274,7 +273,6 @@ impl GraphIR {
                     type_index: buffer.type_idx,
                     generation: buffer.generation,
                     port_id: port.id,
-                    node_id: node.id,
                     should_clear: false,
                 });
             } else {
@@ -286,7 +284,6 @@ impl GraphIR {
                     type_index: sum_buffer.type_idx,
                     generation: sum_buffer.generation,
                     port_id: port.id, // only meaningful to the input port/node.
-                    node_id: node.id,
                     should_clear: false,
                 };
                 // The sum inputs are the corresponding output buffers of the incoming edges.
@@ -301,7 +298,6 @@ impl GraphIR {
                             type_index: buf.type_idx,
                             generation: buf.generation,
                             port_id: edge.src_port,
-                            node_id: edge.src_node,
                             should_clear: false,
                         };
                         allocator.release(buf);
@@ -345,7 +341,6 @@ impl GraphIR {
             buffer_index: input_buffer.idx,
             type_index: input_buffer.type_idx,
             generation: input_buffer.generation,
-            node_id: delay.edge.src_node,
             port_id: delay.edge.src_port,
             should_clear: false,
         });
@@ -354,7 +349,6 @@ impl GraphIR {
             buffer_index: output_buffer.idx,
             type_index: output_buffer.type_idx,
             generation: output_buffer.generation,
-            node_id: delay.edge.dst_node,
             port_id: delay.edge.dst_port,
             should_clear: false,
         });
@@ -424,8 +418,8 @@ impl GraphIR {
     /// List the adjacent nodes along outgoing edges of `n`.
     pub fn outgoing<'a>(&'a self, n: &'a Node) -> impl Iterator<Item = &'a Node> + 'a {
         self.adjacent[&n.id].iter().filter_map(move |e| {
-            if e.src_node == n.id {
-                Some(&self.nodes[&e.src_node])
+            if e.src_port.node == n.id {
+                Some(&self.nodes[&e.dst_port.node])
             } else {
                 None
             }
@@ -435,8 +429,8 @@ impl GraphIR {
     /// List the adjacent nodes along incoming edges of `n`.
     pub fn incoming<'a>(&'a self, n: &'a Node) -> impl Iterator<Item = &'a Node> + 'a {
         self.adjacent[&n.id].iter().filter_map(move |e| {
-            if e.dst_node == n.id {
-                Some(&self.nodes[&e.src_node])
+            if e.dst_port.node == n.id {
+                Some(&self.nodes[&e.src_port.node])
             } else {
                 None
             }

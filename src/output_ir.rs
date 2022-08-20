@@ -94,8 +94,6 @@ pub struct BufferAssignment {
     pub should_clear: bool,
     /// The ID of the port this buffer is mapped to
     pub port_id: PortID,
-    /// The ID of the node this buffer is mapped to
-    pub node_id: NodeID,
     /// Buffers are reused, the "generation" represnts
     /// how many times this buffer has been used before
     /// this assignment. Kept for debugging and visualization.
