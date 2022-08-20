@@ -47,7 +47,7 @@ pub struct ScheduledNode {
     /// The unique ID of this node.
     pub id: NodeID,
     /// The latency of this node. Kept for debugging and visualization.
-    pub latency: f64,
+    pub latency: u64,
     /// The assigned input buffers.
     pub input_buffers: Vec<BufferAssignment>,
     /// The assigned output buffers.
@@ -63,7 +63,7 @@ pub struct InsertedDelay {
     /// The edge that this delay corresponds to. Kept for debugging and visualization.
     pub edge: Edge,
     /// The amount of delay to apply to the input.
-    pub delay: f64,
+    pub delay: u64,
     /// The input data to read.
     pub input_buffer: BufferAssignment,
     /// The output buffer to write delayed into to.

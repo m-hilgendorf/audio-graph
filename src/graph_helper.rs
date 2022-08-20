@@ -53,7 +53,7 @@ impl AudioGraphHelper {
     /// Add a new [Node] the the audio graph.
     ///
     /// This will return the globally unique ID assigned to this node.
-    pub fn add_new_node(&mut self, latency: f64) -> NodeID {
+    pub fn add_new_node(&mut self, latency: u64) -> NodeID {
         let new_id = NodeID(self.next_node_id);
         self.next_node_id += 1;
 
@@ -72,11 +72,19 @@ impl AudioGraphHelper {
         new_id
     }
 
+    /// Get info about a node.
+    ///
+    /// This will return `None` if a node with the given ID does not
+    /// exist in the graph.
+    pub fn get_node(&self, node_id: NodeID) -> Option<&Node> {
+        self.nodes.get(&node_id)
+    }
+
     /// Set the latency of the given [Node] in the audio graph.
     ///
     /// This will return an error if a node with the given ID does not
     /// exist in the graph.
-    pub fn set_node_latency(&mut self, node_id: NodeID, latency: f64) -> Result<(), ()> {
+    pub fn set_node_latency(&mut self, node_id: NodeID, latency: u64) -> Result<(), ()> {
         let node = self.nodes.get_mut(&node_id).ok_or(())?;
 
         if node.latency != latency {

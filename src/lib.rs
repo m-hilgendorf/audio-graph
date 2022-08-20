@@ -31,7 +31,7 @@ mod tests {
                     id: 1.into(),
                     type_idx: 0.into(),
                 }],
-                latency: 0.0,
+                latency: 0,
             },
             Node {
                 id: 1.into(),
@@ -43,7 +43,7 @@ mod tests {
                     id: 1.into(),
                     type_idx: 0.into(),
                 }],
-                latency: 0.0,
+                latency: 0,
             },
         ];
 

@@ -51,7 +51,7 @@ pub struct Node {
     /// A list of output ports used by the node.
     pub outputs: Vec<Port>,
     /// The latency this node adds to data flowing through it.
-    pub latency: f64,
+    pub latency: u64,
 }
 
 /// A [Port] is a single point of input or output data

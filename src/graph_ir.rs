@@ -63,7 +63,7 @@ pub struct TempDelay {
     /// The edge that this delay corresponds to. Kept for debugging and visualization.
     pub edge: Edge,
     /// The amount of delay to apply to the input.
-    pub delay: f64,
+    pub delay: u64,
     /// The input data to read.
     pub input_buffer: Option<BufferAssignment>,
     /// The output buffer to write delayed into to.
@@ -148,12 +148,10 @@ impl GraphIR {
                     (edge, time_of_arrival[&node])
                 })
                 .collect::<Vec<_>>();
-            let max_input_latency = input_latencies
-                .iter()
-                .fold(f64::MIN, |acc, lhs| acc.max(lhs.1));
+            let max_input_latency = input_latencies.iter().fold(0, |acc, lhs| acc.max(lhs.1));
             time_of_arrival.insert(entry.id, max_input_latency + entry.latency);
             let delays = input_latencies.into_iter().filter_map(|(edge, delay)| {
-                if delay != 0.0 {
+                if delay != 0 {
                     let inserted = TempDelay {
                         delay,
                         edge: *edge,
