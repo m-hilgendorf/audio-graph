@@ -1,0 +1,3 @@
+package audio-graph/main defined-in "main.stanza"
+package audio-graph/tests defined-in "tests.stanza"
+package audio-graph/graphviz defined-in "graphviz.stanza"
