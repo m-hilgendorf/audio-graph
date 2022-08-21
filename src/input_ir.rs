@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// A globally unique identifier for a [Node].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeID(pub u64);
+pub struct NodeID(pub u32);
 
 /// The ID for a [Port] on a particular [Node].
 ///
@@ -19,7 +19,7 @@ pub struct PortID(pub u32);
 /// A globally unique identifier for an [Edge].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EdgeID(pub u64);
+pub struct EdgeID(pub u32);
 
 /// The index of the port/buffer type.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
@@ -51,7 +51,7 @@ pub struct Node {
     /// A list of output ports used by the node.
     pub outputs: Vec<Port>,
     /// The latency this node adds to data flowing through it.
-    pub latency: u64,
+    pub latency: f64,
 }
 
 /// A [Port] is a single point of input or output data
@@ -83,12 +83,12 @@ pub struct Edge {
     pub dst_port: PortID,
 }
 
-impl From<u64> for NodeID {
-    fn from(i: u64) -> Self {
+impl From<u32> for NodeID {
+    fn from(i: u32) -> Self {
         NodeID(i)
     }
 }
-impl From<NodeID> for u64 {
+impl From<NodeID> for u32 {
     fn from(i: NodeID) -> Self {
         i.0
     }
@@ -105,12 +105,12 @@ impl From<PortID> for u32 {
     }
 }
 
-impl From<u64> for EdgeID {
-    fn from(i: u64) -> Self {
+impl From<u32> for EdgeID {
+    fn from(i: u32) -> Self {
         EdgeID(i)
     }
 }
-impl From<EdgeID> for u64 {
+impl From<EdgeID> for u32 {
     fn from(i: EdgeID) -> Self {
         i.0
     }
