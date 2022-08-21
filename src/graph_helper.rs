@@ -381,18 +381,11 @@ impl AudioGraphHelper {
     pub fn compile(&mut self) -> CompiledSchedule {
         self.needs_compile = false;
 
-        // TODO: Make this more efficient by not constructing a new
-        // `GraphIR` every time?
-
-        GraphIR::start_preprocessed(
-            self.num_port_types,
-            self.nodes.clone(),
-            self.node_edges.clone(),
-        )
-        .sort_topologically()
-        .solve_latency_requirements()
-        .solve_buffer_requirements()
-        .merge()
+        GraphIR::start(self.num_port_types, &self.nodes, &self.node_edges)
+            .sort_topologically()
+            .solve_latency_requirements()
+            .solve_buffer_requirements()
+            .merge()
     }
 
     /// Returns `true` if `AudioGraphHelper::compile()` should be called
@@ -463,14 +456,7 @@ impl AudioGraphHelper {
     }
 
     fn cycle_detected(&self) -> bool {
-        // TODO: Make this more efficient by not constructing a new
-        // `GraphIR` every time.
-
-        let graph_ir = GraphIR::start_preprocessed(
-            self.num_port_types,
-            self.nodes.clone(),
-            self.node_edges.clone(),
-        );
+        let graph_ir = GraphIR::start(self.num_port_types, &self.nodes, &self.node_edges);
         graph_ir.tarjan() > 0
     }
 }

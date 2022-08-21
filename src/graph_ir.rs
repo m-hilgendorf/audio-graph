@@ -16,13 +16,13 @@ use serde::{Deserialize, Serialize};
 /// via the compiler passes.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug)]
-pub struct GraphIR {
+pub struct GraphIR<'a> {
     /// The number of port types used by the graph.
     num_port_types: usize,
     /// A table of nodes in the graph.
-    nodes: FnvHashMap<NodeID, Node>,
+    nodes: &'a FnvHashMap<NodeID, Node>,
     /// Adjacency list table. Built internally.
-    adjacent: FnvHashMap<NodeID, NodeEdges>,
+    adjacent: &'a FnvHashMap<NodeID, NodeEdges>,
     /// The topologically sorted schedule of the graph. Built internally.
     schedule: Vec<TempEntry>,
     /// The maximum number of buffers used for each port type. Built internally.
@@ -75,43 +75,46 @@ pub fn compile(
     nodes: impl IntoIterator<Item = Node>,
     edges: impl IntoIterator<Item = Edge>,
 ) -> CompiledSchedule {
-    GraphIR::preprocess(num_port_types, nodes, edges)
+    let nodes: FnvHashMap<NodeID, Node> = nodes.into_iter().map(|n| (n.id, n)).collect();
+    let mut adjacent: FnvHashMap<NodeID, NodeEdges> = FnvHashMap::default();
+    for edge in edges.into_iter() {
+        let src = adjacent.entry(edge.src_node).or_insert_with(NodeEdges::new);
+        src.outgoing.push(edge);
+        let dst = adjacent.entry(edge.dst_node).or_insert_with(NodeEdges::new);
+        dst.incoming.push(edge);
+    }
+
+    GraphIR::start(num_port_types, &nodes, &adjacent)
         .sort_topologically()
         .solve_latency_requirements()
         .solve_buffer_requirements()
         .merge()
 }
 
-impl GraphIR {
-    /// Construct a [GraphIR] instance from lists of nodes and edges, building
-    /// up the adjacency table and creating an empty schedule.
-    pub fn preprocess(
-        num_port_types: usize,
-        nodes: impl IntoIterator<Item = Node>,
-        edges: impl IntoIterator<Item = Edge>,
-    ) -> Self {
-        let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
-        let mut adjacent = FnvHashMap::default();
-        for edge in edges.into_iter() {
-            let src = adjacent.entry(edge.src_node).or_insert_with(NodeEdges::new);
-            src.outgoing.push(edge);
-            let dst = adjacent.entry(edge.dst_node).or_insert_with(NodeEdges::new);
-            dst.incoming.push(edge);
-        }
+/// Compile a graph from a pre-existing lists of nodes and their edges.
+///
+/// It is up to the user to uphold the correctness of these lists.
+pub fn compile_preprocessed(
+    num_port_types: usize,
+    nodes: &FnvHashMap<NodeID, Node>,
+    adjacent: &FnvHashMap<NodeID, NodeEdges>,
+) -> CompiledSchedule {
+    GraphIR::start(num_port_types, nodes, adjacent)
+        .sort_topologically()
+        .solve_latency_requirements()
+        .solve_buffer_requirements()
+        .merge()
+}
 
-        Self {
-            num_port_types,
-            nodes,
-            adjacent,
-            schedule: vec![],
-            max_num_buffers: vec![],
-        }
-    }
-
-    pub fn start_preprocessed(
+impl<'a> GraphIR<'a> {
+    /// Construct a [GraphIR] instance from a pre-existing lists of nodes and
+    /// their edges.
+    ///
+    /// It is up to the user to uphold the correctness of these lists.
+    pub fn start(
         num_port_types: usize,
-        nodes: FnvHashMap<NodeID, Node>,
-        adjacent: FnvHashMap<NodeID, NodeEdges>,
+        nodes: &'a FnvHashMap<NodeID, Node>,
+        adjacent: &'a FnvHashMap<NodeID, NodeEdges>,
     ) -> Self {
         Self {
             num_port_types,
@@ -456,7 +459,7 @@ impl GraphIR {
     }
 
     /// List the adjacent nodes along outgoing edges of `n`.
-    pub fn outgoing<'a>(&'a self, n: &'a Node) -> impl Iterator<Item = &'a Node> + 'a {
+    pub fn outgoing<'b>(&'b self, n: &'b Node) -> impl Iterator<Item = &'b Node> + 'b {
         self.adjacent[&n.id]
             .outgoing
             .iter()
@@ -464,7 +467,7 @@ impl GraphIR {
     }
 
     /// List the adjacent nodes along incoming edges of `n`.
-    pub fn incoming<'a>(&'a self, n: &'a Node) -> impl Iterator<Item = &'a Node> + 'a {
+    pub fn incoming<'b>(&'b self, n: &'b Node) -> impl Iterator<Item = &'b Node> + 'b {
         self.adjacent[&n.id]
             .incoming
             .iter()
