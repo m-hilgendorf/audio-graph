@@ -1,140 +1,165 @@
 #![allow(clippy::type_complexity)]
-mod buffer_allocator;
-mod buffer_allocator2;
-mod cache;
-mod error;
-mod graph;
-pub mod graph_ir;
-pub mod input_ir;
-pub mod output_ir;
-mod port_type;
-mod scheduled;
-mod vec;
 
-pub use error::Error;
-pub use graph::{Graph, NodeRef, PortRef};
-pub use port_type::{DefaultPortType, PortType};
-pub use scheduled::{DelayCompInfo, ScheduledNode};
+mod buffer_allocator;
+mod graph_helper;
+mod input_ir;
+mod output_ir;
+
+pub mod error;
+pub mod graph_ir;
+
+pub use graph_helper::*;
+pub use graph_ir::*;
+pub use input_ir::*;
+pub use output_ir::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fnv::{FnvHashMap, FnvHashSet};
+
     #[test]
-    fn basic_ops() {
-        let mut graph = Graph::default();
-        let a = graph.node("A");
-        let b = graph.node("B");
+    fn simplest_graph_compile_test() {
+        let nodes = vec![
+            Node {
+                id: 0.into(),
+                inputs: vec![Port {
+                    id: 0.into(),
+                    type_idx: 0.into(),
+                }],
+                outputs: vec![Port {
+                    id: 1.into(),
+                    type_idx: 0.into(),
+                }],
+                latency: 0,
+            },
+            Node {
+                id: 1.into(),
+                inputs: vec![Port {
+                    id: 0.into(),
+                    type_idx: 0.into(),
+                }],
+                outputs: vec![Port {
+                    id: 1.into(),
+                    type_idx: 0.into(),
+                }],
+                latency: 0,
+            },
+        ];
 
-        let a_in = graph
-            .port(a, DefaultPortType::Event, "events")
-            .expect("port was not created");
-        let a_out = graph
-            .port(a, DefaultPortType::Audio, "output")
-            .expect("port was not created");
-        let b_in = graph
-            .port(b, DefaultPortType::Audio, "input")
-            .expect("port was not created");
+        let edges = vec![Edge {
+            id: 0.into(),
+            src_node: nodes[0].id,
+            src_port: nodes[0].outputs[0].id,
+            dst_node: nodes[1].id,
+            dst_port: nodes[1].inputs[0].id,
+        }];
 
-        graph.connect(a_out, b_in).expect("could not connect");
-        graph
-            .connect(a_in, b_in)
-            .expect_err("connected mistyped ports");
-        graph.delete_port(a_in).expect("could not delete port");
-        graph
-            .disconnect(a_out, b_in)
-            .expect("could not disconnect ports");
-        graph.delete_node(a).expect("could not delete");
-        graph
-            .connect(a_out, b_in)
-            .expect_err("connected node that doesn't exist");
+        let schedule = compile(1, nodes.clone(), edges);
+
+        dbg!(&schedule);
+
+        assert_eq!(schedule.schedule.len(), 2);
+        assert_eq!(schedule.delays.len(), 0);
+        assert_eq!(schedule.num_buffers.len(), 1);
+        assert!(schedule.num_buffers[0] > 0);
+
+        let edge_src_buffer_id = if let ScheduleEntry::Node(scheduled_node) = &schedule.schedule[0]
+        {
+            verify_scheduled_node(scheduled_node, &nodes[0], &[(nodes[0].inputs[0].id, true)]);
+            scheduled_node.output_buffers[0].buffer_index
+        } else {
+            panic!("first entry not a node");
+        };
+        let edge_dst_buffer_id = if let ScheduleEntry::Node(scheduled_node) = &schedule.schedule[1]
+        {
+            verify_scheduled_node(scheduled_node, &nodes[1], &[(nodes[1].inputs[0].id, false)]);
+            scheduled_node.input_buffers[0].buffer_index
+        } else {
+            panic!("second entry not a node");
+        };
+
+        assert_eq!(edge_src_buffer_id, edge_dst_buffer_id);
     }
 
-    #[test]
-    fn simple_graph() {
-        let mut graph = Graph::default();
-        let (a, b, c, d) = (
-            graph.node("A"),
-            graph.node("B"),
-            graph.node("C"),
-            graph.node("D"),
-        );
-        let (a_out, b_out, c_out) = (
-            graph
-                .port(a, DefaultPortType::Audio, "output")
-                .expect("could not create output port"),
-            graph
-                .port(b, DefaultPortType::Audio, "output")
-                .expect("could not create output port"),
-            graph
-                .port(c, DefaultPortType::Audio, "output")
-                .expect("could not create output port"),
-        );
+    fn verify_scheduled_node(
+        scheduled_node: &ScheduledNode,
+        src_node: &Node,
+        in_ports_that_should_clear: &[(PortID, bool)],
+    ) {
+        assert_eq!(scheduled_node.id, src_node.id);
+        assert_eq!(scheduled_node.latency, src_node.latency);
+        assert_eq!(scheduled_node.input_buffers.len(), src_node.inputs.len());
+        assert_eq!(scheduled_node.output_buffers.len(), src_node.outputs.len());
 
-        let (a_in, b_in, c_in, d_in, d_in_2) = (
-            graph
-                .port(a, DefaultPortType::Audio, "input")
-                .expect("could not create input"),
-            graph
-                .port(b, DefaultPortType::Audio, "input")
-                .expect("could not create input"),
-            graph
-                .port(c, DefaultPortType::Audio, "input")
-                .expect("could not create input"),
-            graph
-                .port(d, DefaultPortType::Audio, "d_input_1")
-                .expect("could not create input"),
-            graph
-                .port(d, DefaultPortType::Audio, "d_input_2")
-                .expect("could not create input"),
-        );
-        graph.set_delay(b, 2).expect("could not update delay of b");
-        graph.set_delay(c, 5).expect("could not update delay of c");
-        graph.connect(a_out, b_in).expect("could not connect");
-        graph.connect(a_out, c_in).expect("could not connect");
-        graph.connect(b_out, d_in).expect("could not connect");
-        graph.connect(c_out, d_in).expect("could not connect");
-        graph.connect(b_out, d_in_2).expect("could not connect");
+        assert_eq!(in_ports_that_should_clear.len(), src_node.inputs.len());
 
-        graph
-            .connect(b_out, a_in)
-            .expect_err("Cycles should not be allowed");
+        struct PortCheckVal {
+            should_clear: bool,
+            assigned_a_buffer: bool,
+            type_index: TypeIdx,
+        }
 
-        let mut last_node = None;
-        for entry in graph.compile() {
-            println!("process {:?}:", entry.node);
-            for (port, buffers) in entry.inputs.iter() {
-                println!("    {} => ", port);
-
-                if *port == "d_input_1" {
-                    for (b, delay_comp) in buffers {
-                        println!("        index: {}", b.buffer_id);
-                        println!("        delay_comp: {:?}", delay_comp);
-                    }
-
-                    // One of the buffers should have a delay_comp of 0 (None), and one
-                    // should have a delay_comp of 3
-                    let delay_1 = buffers[0].1.as_ref().map(|d| d.delay).unwrap_or(0);
-                    let delay_2 = buffers[1].1.as_ref().map(|d| d.delay).unwrap_or(0);
-                    assert!((delay_1 == 0 && delay_2 == 3) || (delay_1 == 3 && delay_2 == 0))
-                } else {
-                    for (b, delay_comp) in buffers {
-                        println!("        index: {}", b.buffer_id);
-                        println!("        delay_comp: {:?}", delay_comp);
-
-                        let delay = delay_comp.as_ref().map(|d| d.delay).unwrap_or(0);
-                        if *port == "d_input_2" {
-                            assert_eq!(delay, 3);
-                        } else {
-                            assert_eq!(delay, 0);
-                        }
-                    }
+        let mut port_check: FnvHashMap<PortID, PortCheckVal> = FnvHashMap::default();
+        for (port_id, should_clear) in in_ports_that_should_clear.iter() {
+            let mut found_port_type = None;
+            for port in src_node.inputs.iter() {
+                if port.id == *port_id {
+                    found_port_type = Some(port.type_idx);
+                    break;
                 }
             }
-            for (port, buffer) in entry.outputs.iter() {
-                println!("    {:?} => {}", port, buffer.buffer_id);
-            }
-            last_node = Some(entry.node.clone());
+            let type_index = found_port_type.unwrap();
+
+            assert!(port_check
+                .insert(
+                    *port_id,
+                    PortCheckVal {
+                        should_clear: *should_clear,
+                        assigned_a_buffer: false,
+                        type_index
+                    }
+                )
+                .is_none());
         }
-        assert!(matches!(last_node, Some("D")));
+        for port in src_node.outputs.iter() {
+            assert!(port_check
+                .insert(
+                    port.id,
+                    PortCheckVal {
+                        should_clear: false,
+                        assigned_a_buffer: false,
+                        type_index: port.type_idx
+                    }
+                )
+                .is_none());
+        }
+
+        let mut buffer_alias_check: FnvHashSet<BufferIdx> = FnvHashSet::default();
+
+        for buffer in scheduled_node
+            .input_buffers
+            .iter()
+            .chain(scheduled_node.output_buffers.iter())
+        {
+            assert!(buffer_alias_check.insert(buffer.buffer_index));
+
+            let port_check_val = port_check
+                .get_mut(&buffer.port_id)
+                .expect("Buffer assigned to port that doesn't exist in node");
+
+            assert_eq!(buffer.type_index, port_check_val.type_index);
+            assert_eq!(buffer.should_clear, port_check_val.should_clear);
+
+            if port_check_val.assigned_a_buffer {
+                panic!("More than one buffer assigned to the same port in node");
+            }
+
+            port_check_val.assigned_a_buffer = true;
+        }
+
+        for port_check_val in port_check.values() {
+            assert!(port_check_val.assigned_a_buffer);
+        }
     }
 }
