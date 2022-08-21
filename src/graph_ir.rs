@@ -2,6 +2,7 @@
 //!
 use crate::{
     buffer_allocator::{BufferAllocator, BufferRef},
+    graph_helper::NodeEdges,
     input_ir::*,
     output_ir::*,
 };
@@ -17,17 +18,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug)]
 pub struct GraphIR {
     /// The number of port types used by the graph.
-    pub num_port_types: usize,
+    num_port_types: usize,
     /// A table of nodes in the graph.
-    pub nodes: FnvHashMap<NodeID, Node>,
-    /// A list of edges in the graph.
-    pub edges: FnvHashMap<EdgeID, Edge>,
+    nodes: FnvHashMap<NodeID, Node>,
     /// Adjacency list table. Built internally.
-    pub adjacent: FnvHashMap<NodeID, Vec<Edge>>,
+    adjacent: FnvHashMap<NodeID, NodeEdges>,
     /// The topologically sorted schedule of the graph. Built internally.
-    pub schedule: Vec<TempEntry>,
+    schedule: Vec<TempEntry>,
     /// The maximum number of buffers used for each port type. Built internally.
-    pub max_num_buffers: Vec<usize>,
+    max_num_buffers: Vec<usize>,
 }
 
 /// An entry in the schedule order. Since it is built incrementally, it
@@ -76,9 +75,6 @@ pub fn compile(
     nodes: impl IntoIterator<Item = Node>,
     edges: impl IntoIterator<Item = Edge>,
 ) -> CompiledSchedule {
-    let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
-    let edges: FnvHashMap<EdgeID, Edge> = edges.into_iter().map(|e| (e.id, e)).collect();
-
     GraphIR::preprocess(num_port_types, nodes, edges)
         .sort_topologically()
         .solve_latency_requirements()
@@ -91,21 +87,35 @@ impl GraphIR {
     /// up the adjacency table and creating an empty schedule.
     pub fn preprocess(
         num_port_types: usize,
-        nodes: FnvHashMap<NodeID, Node>,
-        edges: FnvHashMap<EdgeID, Edge>,
+        nodes: impl IntoIterator<Item = Node>,
+        edges: impl IntoIterator<Item = Edge>,
     ) -> Self {
+        let nodes = nodes.into_iter().map(|n| (n.id, n)).collect();
         let mut adjacent = FnvHashMap::default();
-        for edge in edges.values() {
-            let src = adjacent.entry(edge.src_node).or_insert_with(Vec::new);
-            src.push(*edge);
-            let dst = adjacent.entry(edge.dst_node).or_insert_with(Vec::new);
-            dst.push(*edge);
+        for edge in edges.into_iter() {
+            let src = adjacent.entry(edge.src_node).or_insert_with(NodeEdges::new);
+            src.outgoing.push(edge);
+            let dst = adjacent.entry(edge.dst_node).or_insert_with(NodeEdges::new);
+            dst.incoming.push(edge);
         }
 
         Self {
             num_port_types,
             nodes,
-            edges,
+            adjacent,
+            schedule: vec![],
+            max_num_buffers: vec![],
+        }
+    }
+
+    pub fn start_preprocessed(
+        num_port_types: usize,
+        nodes: FnvHashMap<NodeID, Node>,
+        adjacent: FnvHashMap<NodeID, NodeEdges>,
+    ) -> Self {
+        Self {
+            num_port_types,
+            nodes,
             adjacent,
             schedule: vec![],
             max_num_buffers: vec![],
@@ -139,10 +149,10 @@ impl GraphIR {
         let mut new_schedule = Vec::with_capacity(self.schedule.capacity());
         for entry in self.schedule {
             let entry = entry.node(); // cast to a node
-            let incoming_edges = self.adjacent[&entry.id]
+
+            let input_latencies = self.adjacent[&entry.id]
+                .incoming
                 .iter()
-                .filter(|edge| edge.dst_node == entry.id);
-            let input_latencies = incoming_edges
                 .map(|edge| {
                     let node = edge.src_node;
                     (edge, time_of_arrival[&node])
@@ -163,6 +173,7 @@ impl GraphIR {
                     None
                 }
             });
+
             for delay in delays {
                 new_schedule.push(TempEntry::Delay(delay));
             }
@@ -218,65 +229,51 @@ impl GraphIR {
         let mut output_buffers = vec![];
 
         // Collect the inputs to the algorithm, the incoming/outgoing edges of this node.
-        let edges = &self.adjacent[&node.id];
-        let inputs = node.inputs.iter().map(|p| (p, true));
-        let outputs = node.outputs.iter().map(|p| (p, false));
+        let adjacent_edges = &self.adjacent[&node.id];
 
-        for (port, is_input) in outputs.chain(inputs) {
+        let mut buffers_to_release: Vec<Rc<BufferRef>> =
+            Vec::with_capacity(node.inputs.len() + node.outputs.len());
+
+        for port in node.inputs.iter() {
             let type_index = port.type_idx;
-            let edges = edges
+            let edges = adjacent_edges
+                .incoming
                 .iter()
-                .filter(|edge| edge.dst_port == port.id || edge.src_port == port.id)
+                .filter(|edge| edge.dst_port == port.id)
                 .collect::<Vec<_>>();
-            let assignments = if is_input {
-                &mut input_buffers
-            } else {
-                &mut output_buffers
-            };
+
             if edges.is_empty() {
-                // Case 1: The port is unconnected. Acquire a buffer, assign it, and
-                //         immediately release it. The buffer must be cleared.
+                // Case 1: The port is an input and it is unconnected. Acquire a buffer, and
+                //         assign it. The buffer must be cleared. Release the buffer once the
+                //         node assignments are done.
                 let buffer = allocator.acquire(type_index);
-                assignments.push(BufferAssignment {
+                input_buffers.push(BufferAssignment {
                     buffer_index: buffer.idx,
                     generation: buffer.generation,
                     type_index: buffer.type_idx,
                     port_id: port.id,
                     should_clear: true,
                 });
-                allocator.release(buffer);
-            } else if edges.len() == 1 && is_input {
+                buffers_to_release.push(buffer);
+            } else if edges.len() == 1 {
                 // Case 2: The port is an input, and has exactly one incoming edge. Lookup the
-                //         corresponding buffer assign it, then release it. Buffer should not be cleared.
+                //         corresponding buffer and assign it. Buffer should not be cleared.
+                //         Release the buffer once the node assignments are done.
                 let buffer = assignment_table
                     .remove(&edges[0].id)
                     .expect("No buffer assigned to edge!");
-                assignments.push(BufferAssignment {
+                input_buffers.push(BufferAssignment {
                     buffer_index: buffer.idx,
                     type_index: buffer.type_idx,
                     generation: buffer.generation,
                     port_id: port.id,
                     should_clear: false,
                 });
-                allocator.release(buffer);
-            } else if !is_input {
-                // Case 3: The port is an output. Acquire a buffer, and add to the assignment table with
-                //         any corresponding edge IDs. For each edge, update the assigned buffer table.
-                //         Buffer should not be cleared.
-                let buffer = allocator.acquire(type_index);
-                for edge in &edges {
-                    assignment_table.insert(edge.id, buffer.clone());
-                }
-                assignments.push(BufferAssignment {
-                    buffer_index: buffer.idx,
-                    type_index: buffer.type_idx,
-                    generation: buffer.generation,
-                    port_id: port.id,
-                    should_clear: false,
-                });
+                buffers_to_release.push(buffer);
             } else {
-                // Case 4: The port is an input with multiple incoming edges. Compute the summing point, and
-                //         assign the input buffer assignment to the output of the summing point.
+                // Case 4: The port is an input with multiple incoming edges. Compute the
+                //         summing point, and assign the input buffer assignment to the output
+                //         of the summing point.
                 let sum_buffer = allocator.acquire(type_index);
                 let sum_output = BufferAssignment {
                     buffer_index: sum_buffer.idx,
@@ -307,10 +304,54 @@ impl GraphIR {
                     input_buffers: sum_inputs,
                     output_buffer: sum_output,
                 });
-                // This node's input buffer is the sum output buffer
-                assignments.push(sum_output);
-                allocator.release(sum_buffer);
+                // This node's input buffer is the sum output buffer. Release it once the node
+                // assignments are done.
+                input_buffers.push(sum_output);
+                buffers_to_release.push(sum_buffer);
             }
+        }
+
+        for port in node.outputs.iter() {
+            let type_index = port.type_idx;
+            let edges = adjacent_edges
+                .outgoing
+                .iter()
+                .filter(|edge| edge.src_port == port.id)
+                .collect::<Vec<_>>();
+
+            if edges.is_empty() {
+                // Case 5: The port is an output and it is unconnected. Acquire a buffer and
+                //         assign it. The buffer does not need to be cleared. Release the
+                //         buffer once the node assignments are done.
+                let buffer = allocator.acquire(type_index);
+                output_buffers.push(BufferAssignment {
+                    buffer_index: buffer.idx,
+                    generation: buffer.generation,
+                    type_index: buffer.type_idx,
+                    port_id: port.id,
+                    should_clear: false,
+                });
+                buffers_to_release.push(buffer);
+            } else {
+                // Case 6: The port is an output. Acquire a buffer, and add to the assignment
+                //         table with any corresponding edge IDs. For each edge, update the
+                //         assigned buffer table. Buffer should not be cleared or released.
+                let buffer = allocator.acquire(type_index);
+                for edge in &edges {
+                    assignment_table.insert(edge.id, buffer.clone());
+                }
+                output_buffers.push(BufferAssignment {
+                    buffer_index: buffer.idx,
+                    type_index: buffer.type_idx,
+                    generation: buffer.generation,
+                    port_id: port.id,
+                    should_clear: false,
+                });
+            }
+        }
+
+        for buffer in buffers_to_release.drain(..) {
+            allocator.release(buffer);
         }
 
         // Construct the output of the assignment, the scheduled node and any summing nodes we will use.
@@ -416,24 +457,18 @@ impl GraphIR {
 
     /// List the adjacent nodes along outgoing edges of `n`.
     pub fn outgoing<'a>(&'a self, n: &'a Node) -> impl Iterator<Item = &'a Node> + 'a {
-        self.adjacent[&n.id].iter().filter_map(move |e| {
-            if e.src_node == n.id {
-                Some(&self.nodes[&e.dst_node])
-            } else {
-                None
-            }
-        })
+        self.adjacent[&n.id]
+            .outgoing
+            .iter()
+            .map(move |e| &self.nodes[&e.dst_node])
     }
 
     /// List the adjacent nodes along incoming edges of `n`.
     pub fn incoming<'a>(&'a self, n: &'a Node) -> impl Iterator<Item = &'a Node> + 'a {
-        self.adjacent[&n.id].iter().filter_map(move |e| {
-            if e.dst_node == n.id {
-                Some(&self.nodes[&e.src_node])
-            } else {
-                None
-            }
-        })
+        self.adjacent[&n.id]
+            .incoming
+            .iter()
+            .map(move |e| &self.nodes[&e.src_node])
     }
 
     /// List root nodes, or nodes which have indegree of 0.

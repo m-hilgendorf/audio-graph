@@ -384,11 +384,15 @@ impl AudioGraphHelper {
         // TODO: Make this more efficient by not constructing a new
         // `GraphIR` every time?
 
-        GraphIR::preprocess(self.num_port_types, self.nodes.clone(), self.edges.clone())
-            .sort_topologically()
-            .solve_latency_requirements()
-            .solve_buffer_requirements()
-            .merge()
+        GraphIR::start_preprocessed(
+            self.num_port_types,
+            self.nodes.clone(),
+            self.node_edges.clone(),
+        )
+        .sort_topologically()
+        .solve_latency_requirements()
+        .solve_buffer_requirements()
+        .merge()
     }
 
     /// Returns `true` if `AudioGraphHelper::compile()` should be called
@@ -462,8 +466,11 @@ impl AudioGraphHelper {
         // TODO: Make this more efficient by not constructing a new
         // `GraphIR` every time.
 
-        let graph_ir =
-            GraphIR::preprocess(self.num_port_types, self.nodes.clone(), self.edges.clone());
+        let graph_ir = GraphIR::start_preprocessed(
+            self.num_port_types,
+            self.nodes.clone(),
+            self.node_edges.clone(),
+        );
         graph_ir.tarjan() > 0
     }
 }
@@ -479,6 +486,13 @@ pub struct NodeEdges {
 }
 
 impl NodeEdges {
+    pub(crate) fn new() -> Self {
+        Self {
+            incoming: vec![],
+            outgoing: vec![],
+        }
+    }
+
     fn remove_incoming(&mut self, edge_id: EdgeID) {
         let mut found = None;
         for (i, e) in self.incoming.iter().enumerate() {

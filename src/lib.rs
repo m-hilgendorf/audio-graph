@@ -62,7 +62,7 @@ mod tests {
         assert_eq!(schedule.schedule.len(), 2);
         assert_eq!(schedule.delays.len(), 0);
         assert_eq!(schedule.num_buffers.len(), 1);
-        assert!(schedule.num_buffers[0] > 1);
+        assert!(schedule.num_buffers[0] > 0);
 
         let edge_src_buffer_id = if let ScheduleEntry::Node(scheduled_node) = &schedule.schedule[0]
         {
