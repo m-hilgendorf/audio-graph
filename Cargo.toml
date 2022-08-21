@@ -5,7 +5,10 @@ authors = ["Mike Hilgendorf <mike@hilgendorf.audio>"]
 edition = "2018"
 license = "MIT"
 
+[features]
+serialize = ["serde"]
+
 [dependencies]
 smallvec = "1.6"
 fnv = "1.0"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"], optional = true }
