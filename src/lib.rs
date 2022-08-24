@@ -31,7 +31,7 @@ mod tests {
                     id: 1.into(),
                     type_idx: 0.into(),
                 }],
-                latency: 0,
+                latency: 0.0,
             },
             Node {
                 id: 1.into(),
@@ -43,7 +43,7 @@ mod tests {
                     id: 1.into(),
                     type_idx: 0.into(),
                 }],
-                latency: 0,
+                latency: 0.0,
             },
         ];
 
@@ -55,7 +55,7 @@ mod tests {
             dst_port: nodes[1].inputs[0].id,
         }];
 
-        let schedule = compile(1, nodes.clone(), edges);
+        let schedule = compile(1, &nodes, &edges).unwrap();
 
         dbg!(&schedule);
 

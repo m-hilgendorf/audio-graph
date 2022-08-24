@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// A globally unique identifier for a [Node].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeID(pub u64);
+pub struct NodeID(pub u32);
 
 /// The ID for a [Port] on a particular [Node].
 ///
@@ -51,7 +51,7 @@ pub struct Node {
     /// A list of output ports used by the node.
     pub outputs: Vec<Port>,
     /// The latency this node adds to data flowing through it.
-    pub latency: u64,
+    pub latency: f64,
 }
 
 /// A [Port] is a single point of input or output data
@@ -59,7 +59,10 @@ pub struct Node {
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Copy, Clone, Debug)]
 pub struct Port {
-    /// A globally unique identifier of this port.
+    /// The ID of this [Port] for this [Node].
+    ///
+    /// This does not need to be a globally unique identifier,
+    /// just unique to the [Node] it belongs to.
     pub id: PortID,
     /// A unique identifier for the type of data this port handles,
     /// for example nodes may have audio and event ports.
@@ -83,12 +86,12 @@ pub struct Edge {
     pub dst_port: PortID,
 }
 
-impl From<u64> for NodeID {
-    fn from(i: u64) -> Self {
+impl From<u32> for NodeID {
+    fn from(i: u32) -> Self {
         NodeID(i)
     }
 }
-impl From<NodeID> for u64 {
+impl From<NodeID> for u32 {
     fn from(i: NodeID) -> Self {
         i.0
     }
