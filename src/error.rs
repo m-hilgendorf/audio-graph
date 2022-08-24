@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::{Edge, NodeID, Port, PortID, TypeIdx};
+use crate::{Edge, EdgeID, NodeID, Port, PortID, TypeIdx};
 
 /// An error occurred while attempting to add a port to the graph.
 #[derive(Debug, Clone, Copy)]
@@ -169,6 +169,10 @@ pub enum CompileGraphError {
     CycleDetected,
     /// The input data contained an edge referring to a non-existing node.
     NodeOnEdgeNotFound(Edge, NodeID),
+    /// The input data contained multiple nodes with the same ID.
+    NodeIDNotUnique(NodeID),
+    /// The input data contained multiple edges with the same ID.
+    EdgeIDNotUnique(EdgeID),
     /// The input data contained a port with an out-of-bounds type index.
     PortTypeIndexOutOfBounds(NodeID, Port, usize),
 }
@@ -181,11 +185,17 @@ impl fmt::Display for CompileGraphError {
             Self::CycleDetected => {
                 write!(f, "Failed to compile audio graph: a cycle was detected")
             }
-            Self::NodeOnEdgeNotFound(edge, node) => {
-                write!(f, "Failed to compile audio graph: input data contains an edge {:?} referring to a non-existing node {:?}", edge, node)
+            Self::NodeOnEdgeNotFound(edge, node_id) => {
+                write!(f, "Failed to compile audio graph: input data contains an edge {:?} referring to a non-existing node {:?}", edge, node_id)
             }
-            Self::PortTypeIndexOutOfBounds(node, port, num_port_types) => {
-                write!(f, "Failed to compile audio graph: input data contains a port {:?} on node {:?} with a type index that is out of bounds for a graph with {} types", port, node, num_port_types)
+            Self::NodeIDNotUnique(node_id) => {
+                write!(f, "Failed to compile audio graph: input data contains multiple nodes with the same ID {:?}", node_id)
+            }
+            Self::EdgeIDNotUnique(edge_id) => {
+                write!(f, "Failed to compile audio graph: input data contains multiple edges with the same ID {:?}", edge_id)
+            }
+            Self::PortTypeIndexOutOfBounds(node_id, port, num_port_types) => {
+                write!(f, "Failed to compile audio graph: input data contains a port {:?} on node {:?} with a type index that is out of bounds for a graph with {} types", port, node_id, num_port_types)
             }
         }
     }

@@ -19,7 +19,7 @@ pub struct PortID(pub u32);
 /// A globally unique identifier for an [Edge].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EdgeID(pub u64);
+pub struct EdgeID(pub u32);
 
 /// The index of the port/buffer type.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
@@ -108,12 +108,12 @@ impl From<PortID> for u32 {
     }
 }
 
-impl From<u64> for EdgeID {
-    fn from(i: u64) -> Self {
+impl From<u32> for EdgeID {
+    fn from(i: u32) -> Self {
         EdgeID(i)
     }
 }
-impl From<EdgeID> for u64 {
+impl From<EdgeID> for u32 {
     fn from(i: EdgeID) -> Self {
         i.0
     }

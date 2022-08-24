@@ -100,15 +100,24 @@ impl GraphIR {
         nodes: impl IntoIterator<Item = &'a Node>,
         edges: impl IntoIterator<Item = &'a Edge>,
     ) -> Result<Self, CompileGraphError> {
-        let nodes: FnvHashMap<NodeID, Node> =
-            nodes.into_iter().map(|n| (n.id, n.clone())).collect();
+        let mut nodes_map: FnvHashMap<NodeID, Node> = FnvHashMap::default();
+        for node in nodes.into_iter() {
+            if nodes_map.insert(node.id, node.clone()).is_some() {
+                return Err(CompileGraphError::NodeIDNotUnique(node.id));
+            }
+        }
+
         let mut adjacent: FnvHashMap<NodeID, AdjacentEdges> = FnvHashMap::default();
+        let mut edge_ids: FnvHashSet<EdgeID> = FnvHashSet::default();
         for edge in edges.into_iter() {
-            if !nodes.contains_key(&edge.src_node) {
+            if !nodes_map.contains_key(&edge.src_node) {
                 return Err(CompileGraphError::NodeOnEdgeNotFound(*edge, edge.src_node));
             }
-            if !nodes.contains_key(&edge.dst_node) {
+            if !nodes_map.contains_key(&edge.dst_node) {
                 return Err(CompileGraphError::NodeOnEdgeNotFound(*edge, edge.dst_node));
+            }
+            if !edge_ids.insert(edge.id) {
+                return Err(CompileGraphError::EdgeIDNotUnique(edge.id));
             }
 
             let src = adjacent
@@ -123,7 +132,7 @@ impl GraphIR {
 
         Ok(Self {
             num_port_types,
-            nodes,
+            nodes: nodes_map,
             adjacent,
             schedule: vec![],
             max_num_buffers: vec![],

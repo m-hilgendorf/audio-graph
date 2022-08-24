@@ -14,8 +14,9 @@ pub struct AudioGraphHelper {
     edges: FnvHashMap<EdgeID, Edge>,
 
     next_node_id: u32,
-    next_edge_id: u64,
+    next_edge_id: u32,
     free_node_ids: Vec<NodeID>,
+    free_edge_ids: Vec<EdgeID>,
 
     needs_compile: bool,
 
@@ -42,6 +43,7 @@ impl AudioGraphHelper {
             next_node_id: 0,
             next_edge_id: 0,
             free_node_ids: Vec::new(),
+            free_edge_ids: Vec::new(),
             num_port_types,
             needs_compile: false,
         }
@@ -316,8 +318,10 @@ impl AudioGraphHelper {
             return Err(AddEdgeError::CycleDetected);
         }
 
-        let new_edge_id = EdgeID(self.next_edge_id);
-        self.next_edge_id += 1;
+        let new_edge_id = self.free_edge_ids.pop().unwrap_or_else(|| {
+            self.next_edge_id += 1;
+            EdgeID(self.next_edge_id - 1)
+        });
 
         let new_edge = Edge {
             id: new_edge_id,
