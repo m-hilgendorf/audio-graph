@@ -55,7 +55,7 @@ mod tests {
             dst_port: nodes[1].inputs[0].id,
         }];
 
-        let schedule = compile(1, nodes.clone(), edges);
+        let schedule = compile(1, &nodes, &edges).unwrap();
 
         dbg!(&schedule);
 

@@ -3,9 +3,9 @@
 #[cfg(feature = "serialize")]
 use serde::{Deserialize, Serialize};
 
-use fnv::{FnvHashMap, FnvHashSet};
+use fnv::FnvHashMap;
 
-use crate::error::{AddEdgeError, AddPortError, RemovePortError};
+use crate::error::{AddEdgeError, AddPortError, CompileGraphError, RemovePortError};
 use crate::{CompiledSchedule, Edge, EdgeID, GraphIR, Node, NodeID, Port, PortID, TypeIdx};
 
 /// A helper struct to construct and modify audio graphs.
@@ -13,12 +13,11 @@ pub struct AudioGraphHelper {
     nodes: FnvHashMap<NodeID, Node>,
     edges: FnvHashMap<EdgeID, Edge>,
 
-    node_edges: FnvHashMap<NodeID, NodeEdges>,
-
     next_node_id: u32,
     next_edge_id: u32,
+    free_node_ids: Vec<NodeID>,
+    free_edge_ids: Vec<EdgeID>,
 
-    nodes_with_dirty_edges: FnvHashSet<NodeID>,
     needs_compile: bool,
 
     num_port_types: usize,
@@ -41,10 +40,10 @@ impl AudioGraphHelper {
         Self {
             nodes: FnvHashMap::default(),
             edges: FnvHashMap::default(),
-            node_edges: FnvHashMap::default(),
             next_node_id: 0,
             next_edge_id: 0,
-            nodes_with_dirty_edges: FnvHashSet::default(),
+            free_node_ids: Vec::new(),
+            free_edge_ids: Vec::new(),
             num_port_types,
             needs_compile: false,
         }
@@ -53,9 +52,11 @@ impl AudioGraphHelper {
     /// Add a new [Node] the the audio graph.
     ///
     /// This will return the globally unique ID assigned to this node.
-    pub fn add_new_node(&mut self, latency: f64) -> NodeID {
-        let new_id = NodeID(self.next_node_id);
-        self.next_node_id += 1;
+    pub fn add_node(&mut self, latency: f64) -> NodeID {
+        let new_id = self.free_node_ids.pop().unwrap_or_else(|| {
+            self.next_node_id += 1;
+            NodeID(self.next_node_id - 1)
+        });
 
         let new_node = Node {
             id: new_id,
@@ -65,7 +66,6 @@ impl AudioGraphHelper {
         };
 
         self.nodes.insert(new_id, new_node);
-        self.nodes_with_dirty_edges.insert(new_id);
 
         self.needs_compile = true;
 
@@ -76,7 +76,7 @@ impl AudioGraphHelper {
     ///
     /// This will return `None` if a node with the given ID does not
     /// exist in the graph.
-    pub fn get_node(&self, node_id: NodeID) -> Option<&Node> {
+    pub fn node(&self, node_id: NodeID) -> Option<&Node> {
         self.nodes.get(&node_id)
     }
 
@@ -100,30 +100,33 @@ impl AudioGraphHelper {
     /// This will automatically remove all edges from the graph that
     /// were connected to this node.
     ///
+    /// On success, this returns a list of all edges that were removed
+    /// from the graph as a result of removing this node.
+    ///
     /// This will return an error if a node with the given ID does not
     /// exist in the graph.
-    pub fn remove_node(&mut self, node_id: NodeID) -> Result<(), ()> {
+    pub fn remove_node(&mut self, node_id: NodeID) -> Result<Vec<EdgeID>, ()> {
         let node = self.nodes.remove(&node_id).ok_or(())?;
-        self.node_edges.remove(&node_id).unwrap();
+
+        let mut removed_edges: Vec<EdgeID> = Vec::new();
 
         for port in node.inputs.iter().chain(node.outputs.iter()) {
-            self.remove_edges_with_port(node_id, port.id);
+            removed_edges.append(&mut self.remove_edges_with_port(node_id, port.id));
         }
-
-        self.nodes_with_dirty_edges.remove(&node_id);
 
         self.needs_compile = true;
 
-        Ok(())
+        Ok(removed_edges)
     }
 
-    /// Get the edges (port connections) that are currently connected
-    /// to the given node.
-    ///
-    /// This will return `None` if a node with the given ID does not
-    /// exist in the graph.
-    pub fn node_edges(&self, node_id: NodeID) -> Option<&NodeEdges> {
-        self.node_edges.get(&node_id)
+    /// Get a list of all the existing nodes in the graph.
+    pub fn nodes<'a>(&'a self) -> impl Iterator<Item = &'a Node> + 'a {
+        self.nodes.values()
+    }
+
+    /// Get a list of all the existing edges in the graph.
+    pub fn edges<'a>(&'a self) -> impl Iterator<Item = &'a Edge> + 'a {
+        self.edges.values()
     }
 
     /// Add a new [Port] to the graph.
@@ -189,8 +192,9 @@ impl AudioGraphHelper {
     ///
     /// * `node_id` - The ID of the node which the port belongs to.
     /// * `port_id` - The ID of the port to remove.
-    /// * `is_input` - `true` if this is an input port, `false` if this
-    /// is an output port.
+    ///
+    /// On success, this returns a list of all edges that were removed
+    /// from the graph as a result of removing this node.
     ///
     /// If this returns an error, then the audio graph has not been
     /// modified.
@@ -198,26 +202,21 @@ impl AudioGraphHelper {
         &mut self,
         node_id: NodeID,
         port_id: PortID,
-        is_input: bool,
-    ) -> Result<(), RemovePortError> {
+    ) -> Result<Vec<EdgeID>, RemovePortError> {
         let node = self
             .nodes
             .get_mut(&node_id)
             .ok_or(RemovePortError::NodeNotFound(node_id))?;
 
-        if is_input {
-            let mut found = None;
-            for (i, p) in node.inputs.iter().enumerate() {
-                if p.id == port_id {
-                    found = Some(i);
-                    break;
-                }
+        let mut found = None;
+        for (i, p) in node.inputs.iter().enumerate() {
+            if p.id == port_id {
+                found = Some(i);
+                break;
             }
-            if let Some(i) = found {
-                node.inputs.remove(i);
-            } else {
-                return Err(RemovePortError::InPortNotFound(node_id, port_id));
-            }
+        }
+        if let Some(i) = found {
+            node.inputs.remove(i);
         } else {
             let mut found = None;
             for (i, p) in node.outputs.iter().enumerate() {
@@ -229,23 +228,29 @@ impl AudioGraphHelper {
             if let Some(i) = found {
                 node.outputs.remove(i);
             } else {
-                return Err(RemovePortError::OutPortNotFound(node_id, port_id));
+                return Err(RemovePortError::PortNotFound(node_id, port_id));
             }
-        };
-
-        self.remove_edges_with_port(node_id, port_id);
+        }
 
         self.needs_compile = true;
 
-        Ok(())
+        Ok(self.remove_edges_with_port(node_id, port_id))
     }
 
     /// Add an [Edge] (port connection) to the graph.
     ///
+    /// * `src_node_id` - The ID of the source node.
     /// * `src_port_id` - The ID of the source port. This must be an output
-    /// port on a node.
-    /// * `src_port_id` - The ID of the destination port. This must be an
-    /// input port on a node.
+    /// port on the source node.
+    /// * `dst_node_id` - The ID of the destination node.
+    /// * `dst_port_id` - The ID of the destination port. This must be an
+    /// input port on the destination node.
+    /// * `check_for_cycles` - If `true`, then this will run a check to
+    /// see if adding this edge will create a cycle in the graph, and
+    /// return an error if it does.
+    ///     * Only set this to `false` if you are certain that adding this
+    ///     edge won't create a cyle, such as when restoring a previously
+    ///     valid graph from a save state.
     ///
     /// If successful, this returns the globally unique identifier assigned
     /// to this edge.
@@ -258,6 +263,7 @@ impl AudioGraphHelper {
         src_port_id: PortID,
         dst_node_id: NodeID,
         dst_port_id: PortID,
+        check_for_cycles: bool,
     ) -> Result<EdgeID, AddEdgeError> {
         let src_node = self
             .nodes
@@ -298,11 +304,13 @@ impl AudioGraphHelper {
             });
         }
 
-        let src_node_edges = self.node_edges.get_mut(&src_node_id).unwrap();
-
-        for edge in src_node_edges.outgoing.iter() {
-            if edge.dst_port == dst_port_id {
-                return Err(AddEdgeError::EdgeAlreadyExists(*edge));
+        for e in self.edges.values() {
+            if e.src_node == src_node_id
+                && e.dst_node == dst_node_id
+                && e.src_port == src_port_id
+                && e.dst_port == dst_port_id
+            {
+                return Err(AddEdgeError::EdgeAlreadyExists(*e));
             }
         }
 
@@ -310,8 +318,10 @@ impl AudioGraphHelper {
             return Err(AddEdgeError::CycleDetected);
         }
 
-        let new_edge_id = EdgeID(self.next_edge_id);
-        self.next_edge_id += 1;
+        let new_edge_id = self.free_edge_ids.pop().unwrap_or_else(|| {
+            self.next_edge_id += 1;
+            EdgeID(self.next_edge_id - 1)
+        });
 
         let new_edge = Edge {
             id: new_edge_id,
@@ -321,32 +331,15 @@ impl AudioGraphHelper {
             dst_port: dst_port.id,
         };
 
-        src_node_edges.outgoing.push(new_edge);
-        self.node_edges
-            .get_mut(&dst_node_id)
-            .unwrap()
-            .incoming
-            .push(new_edge);
-
         self.edges.insert(new_edge_id, new_edge);
 
-        if self.cycle_detected() {
-            self.node_edges
-                .get_mut(&src_node_id)
-                .unwrap()
-                .remove_outgoing(new_edge_id);
-            self.node_edges
-                .get_mut(&dst_node_id)
-                .unwrap()
-                .remove_incoming(new_edge_id);
+        if check_for_cycles {
+            if self.cycle_detected() {
+                self.edges.remove(&new_edge_id);
 
-            self.edges.remove(&new_edge_id);
-
-            return Err(AddEdgeError::CycleDetected);
+                return Err(AddEdgeError::CycleDetected);
+            }
         }
-
-        self.nodes_with_dirty_edges.insert(src_node_id);
-        self.nodes_with_dirty_edges.insert(dst_node_id);
 
         self.needs_compile = true;
 
@@ -358,19 +351,9 @@ impl AudioGraphHelper {
     /// This will return an error if the given edge does not exist in
     /// the graph. In this case the graph has not been modified.
     pub fn remove_edge(&mut self, edge_id: EdgeID) -> Result<(), ()> {
-        let edge = self.edges.remove(&edge_id).ok_or(())?;
-
-        self.node_edges
-            .get_mut(&edge.src_node)
-            .unwrap()
-            .remove_outgoing(edge_id);
-        self.node_edges
-            .get_mut(&edge.dst_node)
-            .unwrap()
-            .remove_incoming(edge_id);
-
-        self.nodes_with_dirty_edges.insert(edge.src_node);
-        self.nodes_with_dirty_edges.insert(edge.dst_node);
+        if self.edges.remove(&edge_id).is_none() {
+            return Err(());
+        }
 
         self.needs_compile = true;
 
@@ -378,14 +361,14 @@ impl AudioGraphHelper {
     }
 
     /// Compile the graph into a schedule.
-    pub fn compile(&mut self) -> CompiledSchedule {
+    pub fn compile(&mut self) -> Result<CompiledSchedule, CompileGraphError> {
         self.needs_compile = false;
 
-        GraphIR::start(self.num_port_types, &self.nodes, &self.node_edges)
-            .sort_topologically()
-            .solve_latency_requirements()
-            .solve_buffer_requirements()
-            .merge()
+        crate::compile(
+            self.num_port_types,
+            self.nodes.values(),
+            self.edges.values(),
+        )
     }
 
     /// Returns `true` if `AudioGraphHelper::compile()` should be called
@@ -393,28 +376,6 @@ impl AudioGraphHelper {
     /// compile.
     pub fn needs_compile(&self) -> bool {
         self.needs_compile
-    }
-
-    /// Returns `true` if any nodes have had the state of their edges
-    /// (port connections) changed since the last call to
-    /// `AudioGraphHelper::nodes_with_dirty_edges()`.
-    ///
-    /// If `true`, then you can call
-    /// `AudioGraphHelper::nodes_with_dirty_edges()` to get the list of
-    /// these nodes, and then call `AudioGraphHelper::node_edges()` on
-    /// each one to retrieve its edges.
-    pub fn has_nodes_with_dirty_edges(&self) -> bool {
-        !self.nodes_with_dirty_edges.is_empty()
-    }
-
-    /// Returns a list of all nodes that have had the state of their
-    /// edges (port connections) changed since the last call to this
-    /// method.
-    ///
-    /// Call `AudioGraphHelper::node_edges()` on each node to retrieve
-    /// its edges.
-    pub fn nodes_with_dirty_edges(&mut self) -> Vec<NodeID> {
-        self.nodes_with_dirty_edges.drain().collect()
     }
 
     /// The total number of port types that can exist in this audio
@@ -426,7 +387,7 @@ impl AudioGraphHelper {
         self.num_port_types
     }
 
-    fn remove_edges_with_port(&mut self, node_id: NodeID, port_id: PortID) {
+    fn remove_edges_with_port(&mut self, node_id: NodeID, port_id: PortID) -> Vec<EdgeID> {
         let mut edges_to_remove: Vec<EdgeID> = Vec::new();
 
         // Remove all existing edges which have this port.
@@ -439,69 +400,20 @@ impl AudioGraphHelper {
         }
 
         for edge_id in edges_to_remove.iter() {
-            let edge = self.edges.remove(edge_id).unwrap();
-
-            self.node_edges
-                .get_mut(&edge.src_node)
-                .unwrap()
-                .remove_outgoing(edge.id);
-            self.node_edges
-                .get_mut(&edge.dst_node)
-                .unwrap()
-                .remove_incoming(edge.id);
-
-            self.nodes_with_dirty_edges.insert(edge.src_node);
-            self.nodes_with_dirty_edges.insert(edge.dst_node);
+            self.edges.remove(edge_id);
         }
+
+        edges_to_remove
     }
 
     fn cycle_detected(&self) -> bool {
-        let graph_ir = GraphIR::start(self.num_port_types, &self.nodes, &self.node_edges);
-        graph_ir.tarjan() > 0
-    }
-}
-
-/// The edges (port connections) that exist on a given [Node].
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-#[derive(Debug, Clone)]
-pub struct NodeEdges {
-    /// The edges connected to this node's input ports.
-    pub incoming: Vec<Edge>,
-    /// The edges connected to this node's output ports.
-    pub outgoing: Vec<Edge>,
-}
-
-impl NodeEdges {
-    pub(crate) fn new() -> Self {
-        Self {
-            incoming: vec![],
-            outgoing: vec![],
-        }
-    }
-
-    fn remove_incoming(&mut self, edge_id: EdgeID) {
-        let mut found = None;
-        for (i, e) in self.incoming.iter().enumerate() {
-            if e.id == edge_id {
-                found = Some(i);
-                break;
-            }
-        }
-        if let Some(i) = found {
-            self.incoming.remove(i);
-        }
-    }
-
-    fn remove_outgoing(&mut self, edge_id: EdgeID) {
-        let mut found = None;
-        for (i, e) in self.outgoing.iter().enumerate() {
-            if e.id == edge_id {
-                found = Some(i);
-                break;
-            }
-        }
-        if let Some(i) = found {
-            self.outgoing.remove(i);
-        }
+        GraphIR::preprocess(
+            self.num_port_types,
+            self.nodes.values(),
+            self.edges.values(),
+        )
+        .unwrap()
+        .tarjan()
+            > 0
     }
 }

@@ -59,7 +59,10 @@ pub struct Node {
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Copy, Clone, Debug)]
 pub struct Port {
-    /// A globally unique identifier of this port.
+    /// The ID of this [Port] for this [Node].
+    ///
+    /// This does not need to be a globally unique identifier,
+    /// just unique to the [Node] it belongs to.
     pub id: PortID,
     /// A unique identifier for the type of data this port handles,
     /// for example nodes may have audio and event ports.

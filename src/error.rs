@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::{Edge, NodeID, Port, PortID, TypeIdx};
+use crate::{Edge, EdgeID, NodeID, Port, PortID, TypeIdx};
 
 /// An error occurred while attempting to add a port to the graph.
 #[derive(Debug, Clone, Copy)]
@@ -47,10 +47,8 @@ impl fmt::Display for AddPortError {
 pub enum RemovePortError {
     /// The given node was not found in the graph.
     NodeNotFound(NodeID),
-    /// The given input port was not found in the graph.
-    InPortNotFound(NodeID, PortID),
-    /// The given output was not found in the graph.
-    OutPortNotFound(NodeID, PortID),
+    /// The given port was not found in this node.
+    PortNotFound(NodeID, PortID),
 }
 
 impl Error for RemovePortError {}
@@ -61,20 +59,11 @@ impl fmt::Display for RemovePortError {
             Self::NodeNotFound(node_id) => {
                 write!(f, "Could not find node with ID {:?}", node_id)
             }
-            Self::InPortNotFound(node_id, port_id) => {
+            Self::PortNotFound(node_id, port_id) => {
                 write!(
                     f,
-                    "Could not remove port: input port with ID {:?} was not found in node with ID {:?}",
-                    port_id,
-                    node_id,
-                )
-            }
-            Self::OutPortNotFound(node_id, port_id) => {
-                write!(
-                    f,
-                    "Could not remove port: output port with ID {:?} was not found in node with ID {:?}",
-                    port_id,
-                    node_id,
+                    "Could not remove port: port with ID {:?} was not found in node with ID {:?}",
+                    port_id, node_id,
                 )
             }
         }
@@ -167,6 +156,46 @@ impl fmt::Display for AddEdgeError {
             }
             Self::CycleDetected => {
                 write!(f, "Could not add edge: cycle was detected")
+            }
+        }
+    }
+}
+
+/// An error occurred while attempting to compile the audio graph
+/// into a schedule.
+#[derive(Debug, Clone, Copy)]
+pub enum CompileGraphError {
+    /// A cycle was detected in the graph.
+    CycleDetected,
+    /// The input data contained an edge referring to a non-existing node.
+    NodeOnEdgeNotFound(Edge, NodeID),
+    /// The input data contained multiple nodes with the same ID.
+    NodeIDNotUnique(NodeID),
+    /// The input data contained multiple edges with the same ID.
+    EdgeIDNotUnique(EdgeID),
+    /// The input data contained a port with an out-of-bounds type index.
+    PortTypeIndexOutOfBounds(NodeID, Port, usize),
+}
+
+impl Error for CompileGraphError {}
+
+impl fmt::Display for CompileGraphError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CycleDetected => {
+                write!(f, "Failed to compile audio graph: a cycle was detected")
+            }
+            Self::NodeOnEdgeNotFound(edge, node_id) => {
+                write!(f, "Failed to compile audio graph: input data contains an edge {:?} referring to a non-existing node {:?}", edge, node_id)
+            }
+            Self::NodeIDNotUnique(node_id) => {
+                write!(f, "Failed to compile audio graph: input data contains multiple nodes with the same ID {:?}", node_id)
+            }
+            Self::EdgeIDNotUnique(edge_id) => {
+                write!(f, "Failed to compile audio graph: input data contains multiple edges with the same ID {:?}", edge_id)
+            }
+            Self::PortTypeIndexOutOfBounds(node_id, port, num_port_types) => {
+                write!(f, "Failed to compile audio graph: input data contains a port {:?} on node {:?} with a type index that is out of bounds for a graph with {} types", port, node_id, num_port_types)
             }
         }
     }
