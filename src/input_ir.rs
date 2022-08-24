@@ -19,7 +19,7 @@ pub struct PortID(pub u32);
 /// A globally unique identifier for an [Edge].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EdgeID(pub u32);
+pub struct EdgeID(pub u64);
 
 /// The index of the port/buffer type.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
@@ -59,7 +59,10 @@ pub struct Node {
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Copy, Clone, Debug)]
 pub struct Port {
-    /// A globally unique identifier of this port.
+    /// The ID of this [Port] for this [Node].
+    ///
+    /// This does not need to be a globally unique identifier,
+    /// just unique to the [Node] it belongs to.
     pub id: PortID,
     /// A unique identifier for the type of data this port handles,
     /// for example nodes may have audio and event ports.
@@ -105,12 +108,12 @@ impl From<PortID> for u32 {
     }
 }
 
-impl From<u32> for EdgeID {
-    fn from(i: u32) -> Self {
+impl From<u64> for EdgeID {
+    fn from(i: u64) -> Self {
         EdgeID(i)
     }
 }
-impl From<EdgeID> for u32 {
+impl From<EdgeID> for u64 {
     fn from(i: EdgeID) -> Self {
         i.0
     }
