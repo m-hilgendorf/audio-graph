@@ -7,7 +7,7 @@ use crate::{
     output_ir::*,
 };
 use fnv::{FnvHashMap, FnvHashSet};
-use std::rc::Rc;
+use std::{rc::Rc, collections::VecDeque};
 
 #[cfg(feature = "serialize")]
 use serde::{Deserialize, Serialize};
@@ -146,17 +146,17 @@ impl GraphIR {
             return Err(CompileGraphError::CycleDetected);
         }
 
-        let mut stack = self.roots().cloned().collect::<Vec<_>>();
+        let mut stack = self.roots().cloned().collect::<VecDeque<_>>();
         let mut visited = FnvHashSet::default();
         visited.reserve(self.nodes.len());
 
         self.schedule.clear();
 
-        while let Some(node) = stack.pop() {
+        while let Some(node) = stack.pop_front() {
             if !visited.contains(&node.id) {
                 visited.insert(node.id);
                 for next in self.outgoing(&node) {
-                    stack.push(next.clone());
+                    stack.push_back(next.clone());
                 }
                 self.schedule.push(TempEntry::Node(node));
             }
