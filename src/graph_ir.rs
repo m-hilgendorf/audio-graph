@@ -101,13 +101,14 @@ impl GraphIR {
         edges: impl IntoIterator<Item = &'a Edge>,
     ) -> Result<Self, CompileGraphError> {
         let mut nodes_map: FnvHashMap<NodeID, Node> = FnvHashMap::default();
+        let mut adjacent: FnvHashMap<NodeID, AdjacentEdges> = FnvHashMap::default();
         for node in nodes.into_iter() {
             if nodes_map.insert(node.id, node.clone()).is_some() {
                 return Err(CompileGraphError::NodeIDNotUnique(node.id));
             }
+            adjacent.insert(node.id, AdjacentEdges::default());
         }
 
-        let mut adjacent: FnvHashMap<NodeID, AdjacentEdges> = FnvHashMap::default();
         let mut edge_ids: FnvHashSet<EdgeID> = FnvHashSet::default();
         for edge in edges.into_iter() {
             if !nodes_map.contains_key(&edge.src_node) {
