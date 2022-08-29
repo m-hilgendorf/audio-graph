@@ -7,7 +7,7 @@ use crate::{
     output_ir::*,
 };
 use fnv::{FnvHashMap, FnvHashSet};
-use std::rc::Rc;
+use std::{rc::Rc, collections::VecDeque};
 
 #[cfg(feature = "serialize")]
 use serde::{Deserialize, Serialize};
@@ -101,13 +101,14 @@ impl GraphIR {
         edges: impl IntoIterator<Item = &'a Edge>,
     ) -> Result<Self, CompileGraphError> {
         let mut nodes_map: FnvHashMap<NodeID, Node> = FnvHashMap::default();
+        let mut adjacent: FnvHashMap<NodeID, AdjacentEdges> = FnvHashMap::default();
         for node in nodes.into_iter() {
             if nodes_map.insert(node.id, node.clone()).is_some() {
                 return Err(CompileGraphError::NodeIDNotUnique(node.id));
             }
+            adjacent.insert(node.id, AdjacentEdges::default());
         }
 
-        let mut adjacent: FnvHashMap<NodeID, AdjacentEdges> = FnvHashMap::default();
         let mut edge_ids: FnvHashSet<EdgeID> = FnvHashSet::default();
         for edge in edges.into_iter() {
             if !nodes_map.contains_key(&edge.src_node) {
@@ -145,17 +146,17 @@ impl GraphIR {
             return Err(CompileGraphError::CycleDetected);
         }
 
-        let mut stack = self.roots().cloned().collect::<Vec<_>>();
+        let mut queue = self.roots().cloned().collect::<VecDeque<_>>();
         let mut visited = FnvHashSet::default();
         visited.reserve(self.nodes.len());
 
         self.schedule.clear();
 
-        while let Some(node) = stack.pop() {
+        while let Some(node) = queue.pop_front() {
             if !visited.contains(&node.id) {
                 visited.insert(node.id);
                 for next in self.outgoing(&node) {
-                    stack.push(next.clone());
+                    queue.push_back(next.clone());
                 }
                 self.schedule.push(TempEntry::Node(node));
             }
@@ -258,14 +259,13 @@ impl GraphIR {
 
         for port in node.inputs.iter() {
             if port.type_idx.0 >= self.num_port_types {
-                return Err(CompileGraphError::PortTypeIndexOutOfBounds(
-                    node.id,
-                    *port,
-                    self.num_port_types,
-                ));
+                return Err(CompileGraphError::PortTypeIndexOutOfBounds {
+                    node_id: node.id,
+                    port: *port,
+                    num_port_types: self.num_port_types,
+                });
             }
 
-            let type_index = port.type_idx;
             let edges = adjacent_edges
                 .incoming
                 .iter()
@@ -276,7 +276,7 @@ impl GraphIR {
                 // Case 1: The port is an input and it is unconnected. Acquire a buffer, and
                 //         assign it. The buffer must be cleared. Release the buffer once the
                 //         node assignments are done.
-                let buffer = allocator.acquire(type_index);
+                let buffer = allocator.acquire(port.type_idx);
                 input_buffers.push(BufferAssignment {
                     buffer_index: buffer.idx,
                     generation: buffer.generation,
@@ -292,6 +292,15 @@ impl GraphIR {
                 let buffer = assignment_table
                     .remove(&edges[0].id)
                     .expect("No buffer assigned to edge!");
+
+                if buffer.type_idx != port.type_idx {
+                    return Err(CompileGraphError::EdgeTypeMismatch {
+                        edge: *edges[0],
+                        src_port_type: buffer.type_idx,
+                        dst_port_type: port.type_idx,
+                    });
+                }
+
                 input_buffers.push(BufferAssignment {
                     buffer_index: buffer.idx,
                     type_index: buffer.type_idx,
@@ -304,7 +313,7 @@ impl GraphIR {
                 // Case 4: The port is an input with multiple incoming edges. Compute the
                 //         summing point, and assign the input buffer assignment to the output
                 //         of the summing point.
-                let sum_buffer = allocator.acquire(type_index);
+                let sum_buffer = allocator.acquire(port.type_idx);
                 let sum_output = BufferAssignment {
                     buffer_index: sum_buffer.idx,
                     type_index: sum_buffer.type_idx,
@@ -312,24 +321,33 @@ impl GraphIR {
                     port_id: port.id, // only meaningful to the input port/node.
                     should_clear: false,
                 };
+
                 // The sum inputs are the corresponding output buffers of the incoming edges.
-                let sum_inputs = edges
-                    .iter()
-                    .map(|edge| {
-                        let buf = assignment_table
-                            .remove(&edge.id)
-                            .expect("No buffer assigned to edge!");
-                        let assignment = BufferAssignment {
-                            buffer_index: buf.idx,
-                            type_index: buf.type_idx,
-                            generation: buf.generation,
-                            port_id: edge.src_port,
-                            should_clear: false,
-                        };
-                        allocator.release(buf);
-                        assignment
-                    })
-                    .collect();
+                let mut sum_inputs: Vec<BufferAssignment> = Vec::with_capacity(edges.len());
+                for edge in edges.iter() {
+                    let buf = assignment_table
+                        .remove(&edge.id)
+                        .expect("No buffer assigned to edge!");
+
+                    if buf.type_idx != port.type_idx {
+                        return Err(CompileGraphError::EdgeTypeMismatch {
+                            edge: **edge,
+                            src_port_type: buf.type_idx,
+                            dst_port_type: port.type_idx,
+                        });
+                    }
+
+                    let assignment = BufferAssignment {
+                        buffer_index: buf.idx,
+                        type_index: buf.type_idx,
+                        generation: buf.generation,
+                        port_id: edge.src_port,
+                        should_clear: false,
+                    };
+                    allocator.release(buf);
+                    sum_inputs.push(assignment);
+                }
+
                 summing_nodes.push(InsertedSum {
                     input_buffers: sum_inputs,
                     output_buffer: sum_output,
@@ -343,14 +361,13 @@ impl GraphIR {
 
         for port in node.outputs.iter() {
             if port.type_idx.0 >= self.num_port_types {
-                return Err(CompileGraphError::PortTypeIndexOutOfBounds(
-                    node.id,
-                    *port,
-                    self.num_port_types,
-                ));
+                return Err(CompileGraphError::PortTypeIndexOutOfBounds {
+                    node_id: node.id,
+                    port: *port,
+                    num_port_types: self.num_port_types,
+                });
             }
 
-            let type_index = port.type_idx;
             let edges = adjacent_edges
                 .outgoing
                 .iter()
@@ -361,7 +378,7 @@ impl GraphIR {
                 // Case 5: The port is an output and it is unconnected. Acquire a buffer and
                 //         assign it. The buffer does not need to be cleared. Release the
                 //         buffer once the node assignments are done.
-                let buffer = allocator.acquire(type_index);
+                let buffer = allocator.acquire(port.type_idx);
                 output_buffers.push(BufferAssignment {
                     buffer_index: buffer.idx,
                     generation: buffer.generation,
@@ -374,7 +391,7 @@ impl GraphIR {
                 // Case 6: The port is an output. Acquire a buffer, and add to the assignment
                 //         table with any corresponding edge IDs. For each edge, update the
                 //         assigned buffer table. Buffer should not be cleared or released.
-                let buffer = allocator.acquire(type_index);
+                let buffer = allocator.acquire(port.type_idx);
                 for edge in &edges {
                     assignment_table.insert(edge.id, buffer.clone());
                 }

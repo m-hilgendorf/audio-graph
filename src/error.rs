@@ -174,7 +174,17 @@ pub enum CompileGraphError {
     /// The input data contained multiple edges with the same ID.
     EdgeIDNotUnique(EdgeID),
     /// The input data contained a port with an out-of-bounds type index.
-    PortTypeIndexOutOfBounds(NodeID, Port, usize),
+    PortTypeIndexOutOfBounds {
+        node_id: NodeID,
+        port: Port,
+        num_port_types: usize,
+    },
+    /// The input data contained an edge with mismatched port types.
+    EdgeTypeMismatch {
+        edge: Edge,
+        src_port_type: TypeIdx,
+        dst_port_type: TypeIdx,
+    },
 }
 
 impl Error for CompileGraphError {}
@@ -194,8 +204,19 @@ impl fmt::Display for CompileGraphError {
             Self::EdgeIDNotUnique(edge_id) => {
                 write!(f, "Failed to compile audio graph: input data contains multiple edges with the same ID {:?}", edge_id)
             }
-            Self::PortTypeIndexOutOfBounds(node_id, port, num_port_types) => {
+            Self::PortTypeIndexOutOfBounds {
+                node_id,
+                port,
+                num_port_types,
+            } => {
                 write!(f, "Failed to compile audio graph: input data contains a port {:?} on node {:?} with a type index that is out of bounds for a graph with {} types", port, node_id, num_port_types)
+            }
+            Self::EdgeTypeMismatch {
+                edge,
+                src_port_type,
+                dst_port_type,
+            } => {
+                write!(f, "Failed to compile audio graph: input data contains an edge {:?} with an input port of type {:?} and an output port of type {:?}", edge, src_port_type, dst_port_type)
             }
         }
     }
